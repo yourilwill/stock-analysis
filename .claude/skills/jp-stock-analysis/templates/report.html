@@ -39,6 +39,11 @@
   .src { font-size: 0.82em; color: #6272a4; }
   .src a { color: #ff79c6; }
   .chart-box { background: #343649; border: 1px solid #6272a4; border-radius: 6px; padding: 16px; margin: 8px 0 28px; }
+  .range-control { margin-top: 10px; padding-top: 10px; border-top: 1px solid #44475a; font-size: 0.85em; color: #8be9fd; }
+  .range-control .range-label { color: #f1fa8c; font-weight: bold; }
+  .range-control .range-row { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+  .range-control .range-row span { width: 38px; color: #6272a4; flex-shrink: 0; }
+  .range-control input[type="range"] { flex: 1; accent-color: #bd93f9; }
 </style>
 </head>
 <body>
@@ -64,6 +69,18 @@
     例: 大株主への注意点）・badge（badge-cheap=割安/red, badge-good=良好/green, badge-neutral=中立/gray）
     を使い分けて記述する ...
 
+<!-- グラフ＋シークバーの定型パターン（ステップ3・ステップ5などで使う）。
+     canvas の id（例: chart-stepN）と range input の id（chart-stepN-start / -end / -label）を揃えること。
+     min/max は配列の要素数-1（0始まりインデックス）。 -->
+<div class="chart-box">
+<canvas id="chart-stepN"></canvas>
+<div class="range-control">
+  表示期間: <span class="range-label" id="chart-stepN-label"></span>
+  <div class="range-row"><span>開始</span><input type="range" id="chart-stepN-start" min="0" max="..." value="0" step="1"></div>
+  <div class="range-row"><span>終了</span><input type="range" id="chart-stepN-end" min="0" max="..." value="..." step="1"></div>
+</div>
+</div>
+
 <footer>
 本レポートはClaude Codeによる分析支援を用いて作成されました。投資判断は自己責任で行ってください。<br>
 データ出典: IRBANK (irbank.net)、{{会社名}}公式サイト、EDINET有価証券報告書（第N期〜第M期）
@@ -73,7 +90,36 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <script>
 const dracula = { cyan: '#8be9fd', green: '#50fa7b', yellow: '#f1fa8c', fg: '#f8f8f2', grid: '#44475a' };
-new Chart(document.getElementById('chart-step3'), { /* 売上高=bar(cyan)、営業利益・経常利益=line(green/yellow)、左右2軸 */ });
+
+// ---- 期間で絞り込み可能なグラフを作るための共通ヘルパー。すべてのグラフでこれを使う ----
+function makeRangeableChart(chartId, fullLabels, fullDatasets, chartOptions) {
+  const ctx = document.getElementById(chartId);
+  const chart = new Chart(ctx, {
+    data: { labels: fullLabels.slice(), datasets: fullDatasets.map(d => Object.assign({}, d, { data: d.data.slice() })) },
+    options: chartOptions
+  });
+  const startInput = document.getElementById(chartId + '-start');
+  const endInput = document.getElementById(chartId + '-end');
+  const label = document.getElementById(chartId + '-label');
+  if (!startInput || !endInput) return chart;
+
+  function render() {
+    let s = parseInt(startInput.value, 10);
+    let e = parseInt(endInput.value, 10);
+    if (s > e) { [s, e] = [e, s]; }
+    chart.data.labels = fullLabels.slice(s, e + 1);
+    chart.data.datasets.forEach((ds, i) => { ds.data = fullDatasets[i].data.slice(s, e + 1); });
+    chart.update();
+    if (label) label.textContent = fullLabels[s] + ' 〜 ' + fullLabels[e];
+  }
+  startInput.addEventListener('input', render);
+  endInput.addEventListener('input', render);
+  render();
+  return chart;
+}
+
+// 売上高=bar(cyan)、営業利益・経常利益=line(green/yellow)、左右2軸。ステップ5（1株配当・配当性向、配当利回り）も同じ makeRangeableChart() で実装する。
+makeRangeableChart('chart-step3', [/* labels */], [/* datasets */], { /* options */ });
 </script>
 </body>
 </html>
