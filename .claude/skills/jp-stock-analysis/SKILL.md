@@ -89,5 +89,89 @@ IRBANKから可能な限り遡って（最低10年、可能ならリーマンシ
 - 内容: ステップ1〜13の全結果を、目次付き・見出し階層付きでまとめる。サマリーカード（株価・時価総額・PER・PBR・配当利回り・自己資本比率等）を冒頭に置く。
 - ステップ3（過去の業績推移）の表の直後には、売上高・営業利益・経常利益の推移を可視化したグラフを必ず添える（Chart.js をCDN経由で読み込み、売上高をbar・営業利益と経常利益をlineの複合グラフとし、スケール差が大きいため左右2軸（売上高=左軸、利益=右軸）に分ける）。
 - ステップ10（資産価値を含めたPER）の表の直後には、実際に使った数値を当てはめた計算式（ネットキャッシュ・調整後の時価総額・資産価値を含めたPERの3行）を必ず明記する。
-- デザイン: Draculaカラーパレットを基調にしたダークテーマのCSSを使う（背景 `#282a36`系、強調に紫`#bd93f9`・シアン`#8be9fd`・グリーン`#50fa7b`・イエロー`#f1fa8c`・ピンク`#ff79c6`・オレンジ`#ffb86c`・レッド`#ff5555`を使い分ける。緑だけに偏らないよう色を分散させる）。
-- 出典（IRBANK／公式IR／有報／ニュース記事のURL）は脚注やsourceリンクとして残す。
+- **HTML/CSSは既存レポート（`analysis_results/7438_コンドーテック/`、`analysis_results/7971_東リ/`等）と同一フォーマットを使い回す。** 新規にレイアウトを考案しない。具体的には以下の構造・CSSクラスをそのまま流用する。
+
+```html
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>{{会社名}}株式会社（{{証券コード}}）銘柄分析レポート {{YYYY/MM/DD}}</title>
+<style>
+  /* Dracula palette: bg #282a36, current-line #44475a, fg #f8f8f2, comment #6272a4,
+     cyan #8be9fd, green #50fa7b, orange #ffb86c, pink #ff79c6, purple #bd93f9, red #ff5555, yellow #f1fa8c */
+  body { font-family: "Hiragino Sans", "Helvetica Neue", Arial, "Yu Gothic", sans-serif; line-height: 1.7; color: #f8f8f2; background: #21222c; margin: 0; padding: 0; }
+  .container { max-width: 1000px; margin: 0 auto; padding: 30px 24px 80px; background: #282a36; box-shadow: 0 0 24px rgba(0,0,0,0.5); }
+  h1 { font-size: 1.7em; color: #bd93f9; border-bottom: 4px solid #bd93f9; padding-bottom: 12px; margin-bottom: 4px; }
+  .subtitle { color: #6272a4; margin-bottom: 32px; font-size: 0.95em; }
+  h2 { font-size: 1.25em; color: #282a36; background: #bd93f9; padding: 8px 14px; margin-top: 48px; border-radius: 4px; }
+  h3 { font-size: 1.05em; color: #8be9fd; border-left: 4px solid #ff79c6; padding-left: 10px; margin-top: 28px; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0 24px; font-size: 0.92em; }
+  th, td { border: 1px solid #44475a; padding: 6px 10px; text-align: right; color: #f8f8f2; }
+  th { background: #44475a; color: #f1fa8c; text-align: center; }
+  td:first-child, th:first-child { text-align: left; }
+  tr:nth-child(even) td { background: #2d2f3f; }
+  .center { text-align: center; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.85em; font-weight: bold; color: #282a36; }
+  .badge-cheap { background: #ff5555; color: #f8f8f2; }
+  .badge-good { background: #50fa7b; }
+  .badge-neutral { background: #6272a4; color: #f8f8f2; }
+  .note { color: #6272a4; font-size: 0.88em; }
+  .highlight-box { background: #34324a; border: 1px solid #bd93f9; border-radius: 6px; padding: 14px 18px; margin: 16px 0; }
+  .warn-box { background: #3a3326; border: 1px solid #ffb86c; border-radius: 6px; padding: 14px 18px; margin: 16px 0; }
+  .toc { background: #343649; border-radius: 6px; padding: 16px 24px; margin-bottom: 30px; }
+  .toc a { color: #8be9fd; text-decoration: none; }
+  .toc a:hover { text-decoration: underline; color: #ff79c6; }
+  .toc ul { margin: 6px 0; }
+  .summary-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin: 16px 0; }
+  .summary-card { background: #343649; border: 1px solid #6272a4; border-radius: 6px; padding: 12px 16px; }
+  .summary-card .label { font-size: 0.82em; color: #8be9fd; }
+  .summary-card .value { font-size: 1.3em; font-weight: bold; color: #50fa7b; }
+  a { color: #8be9fd; }
+  strong { color: #f1fa8c; }
+  footer { margin-top: 60px; color: #6272a4; font-size: 0.8em; text-align: center; }
+  .src { font-size: 0.82em; color: #6272a4; }
+  .src a { color: #ff79c6; }
+  .chart-box { background: #343649; border: 1px solid #6272a4; border-radius: 6px; padding: 16px; margin: 8px 0 28px; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>{{会社名}}株式会社（証券コード：{{証券コード}}）銘柄分析レポート</h1>
+<div class="subtitle">分析日: ... ／ 株価基準日: ... ／ データ出典: IRBANK、{{会社名}}公式サイト、有価証券報告書（EDINET）、決算短信等</div>
+
+<div class="summary-grid">
+  <div class="summary-card"><div class="label">株価</div><div class="value">...</div></div>
+  <div class="summary-card"><div class="label">時価総額</div><div class="value">...（規模区分）</div></div>
+  <div class="summary-card"><div class="label">PER（実績／予想）</div><div class="value">...</div></div>
+  <div class="summary-card"><div class="label">PBR</div><div class="value">...</div></div>
+  <div class="summary-card"><div class="label">配当利回り（予想）</div><div class="value">...</div></div>
+  <div class="summary-card"><div class="label">自己資本比率</div><div class="value">...（判定）</div></div>
+</div>
+
+<div class="toc">...ステップ1〜13へのアンカーリンク一覧（id="step1"〜"step13"）...</div>
+
+<h2 id="step1">ステップ1: ...</h2>
+... 各ステップを <h2 id="stepN"> で区切り、必要に応じて <h3> でサブ見出し、
+    table・highlight-box（紫枠＝計算式や公式方針の引用）・warn-box（オレンジ枠＝注意喚起、
+    例: 大株主への注意点）・badge（badge-cheap=割安/red, badge-good=良好/green, badge-neutral=中立/gray）
+    を使い分けて記述する ...
+
+<footer>
+本レポートはClaude Codeによる分析支援を用いて作成されました。投資判断は自己責任で行ってください。<br>
+データ出典: IRBANK (irbank.net)、{{会社名}}公式サイト、EDINET有価証券報告書（第N期〜第M期）
+</footer>
+
+</div>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script>
+const dracula = { cyan: '#8be9fd', green: '#50fa7b', yellow: '#f1fa8c', fg: '#f8f8f2', grid: '#44475a' };
+new Chart(document.getElementById('chart-step3'), { /* 売上高=bar(cyan)、営業利益・経常利益=line(green/yellow)、左右2軸 */ });
+</script>
+</body>
+</html>
+```
+
+- ステップ11のシミュレーション表は、コンドーテック・東リのレポートと同じ列構成（左から「株価／EPS／BPS／配当／PER／PBR／配当性向／配当利回り」を行、列を「基準年(今期)〜10年後」の11列＝合計11時点）で、5パターン全てを `<h3>` で区切って描く。
+- 出典（IRBANK／公式IR／有報／ニュース記事のURL）は `<div class="src">` または脚注（`<p class="note">`）として残す。
