@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""銘柄コードと年度を指定して、IRBANKから1株当たり年間配当金(円)を取得するCLIツール。
+"""銘柄コードと年度を指定して、IRBANKから1株当たり年間配当金(円)と配当利回り(%)を取得するCLIツール。
 
 使い方:
     python3 irbank_dividend.py <銘柄コード> <年度>
@@ -27,6 +27,16 @@ def parse_number(s: str):
         return None
     try:
         return float(s) if "." in s else int(s)
+    except ValueError:
+        return None
+
+
+def parse_percent(s: str):
+    s = strip_tags(s).replace(",", "").rstrip("%")
+    if s in ("", "-"):
+        return None
+    try:
+        return float(s)
     except ValueError:
         return None
 
@@ -84,7 +94,11 @@ def fetch_dividend_table(code: str):
                 parse_number(row_cells[sub_index["分割調整"]][1])
                 if "分割調整" in sub_index else total
             )
-            rows.append({"status": status, "total": total, "adjusted": adjusted})
+            dividend_yield = (
+                parse_percent(row_cells[sub_index["配当利回り"]][1])
+                if "配当利回り" in sub_index else None
+            )
+            rows.append({"status": status, "total": total, "adjusted": adjusted, "yield": dividend_yield})
         groups.append({"year": year, "rows": rows})
 
     return company_name, groups, url
@@ -112,6 +126,7 @@ def get_dividend(code: str, year: int, use_adjusted: bool = False):
         "company_name": company_name,
         "year": year,
         "dividend": latest_row[key],
+        "dividend_yield": latest_row["yield"],
         "status": latest_row["status"],
         "source_url": url,
     }
@@ -132,8 +147,10 @@ def main():
 
     dividend = result["dividend"]
     dividend_str = "未発表" if dividend is None else f"{dividend}円"
+    yield_value = result["dividend_yield"]
+    yield_str = "不明" if yield_value is None else f"{yield_value}%"
     print(f"{result['company_name']}({result['code']}) {result['year']}年度の配当: "
-          f"{dividend_str} [{result['status']}]")
+          f"{dividend_str}（配当利回り: {yield_str}） [{result['status']}]")
     print(f"出典: {result['source_url']}")
 
 
