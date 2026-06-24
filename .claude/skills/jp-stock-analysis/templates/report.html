@@ -81,6 +81,17 @@
 </div>
 </div>
 
+<!-- セグメント別構成比の円グラフ（売上高構成比・営業利益構成比）の定型パターン（ステップ2で使う）。
+     2つを横並びにし、高さを320pxに固定して肥大化を防ぐ。canvas id（例: chart-step2-sales / chart-step2-profit）。 -->
+<div style="display: flex; gap: 16px; flex-wrap: wrap;">
+<div class="chart-box" style="flex: 1 1 360px; min-width: 0; height: 320px;">
+<canvas id="chart-step2-sales"></canvas>
+</div>
+<div class="chart-box" style="flex: 1 1 360px; min-width: 0; height: 320px;">
+<canvas id="chart-step2-profit"></canvas>
+</div>
+</div>
+
 <footer>
 本レポートはClaude Codeによる分析支援を用いて作成されました。投資判断は自己責任で行ってください。<br>
 データ出典: IRBANK (irbank.net)、{{会社名}}公式サイト、EDINET有価証券報告書（第N期〜第M期）
@@ -90,6 +101,7 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <script>
 const dracula = { cyan: '#8be9fd', green: '#50fa7b', yellow: '#f1fa8c', fg: '#f8f8f2', grid: '#44475a' };
+const pieColors = ['#8be9fd', '#ff79c6', '#50fa7b', '#ffb86c', '#bd93f9', '#ff5555'];
 
 // ---- 期間で絞り込み可能なグラフを作るための共通ヘルパー。すべてのグラフでこれを使う ----
 function makeRangeableChart(chartId, fullLabels, fullDatasets, chartOptions) {
@@ -120,6 +132,48 @@ function makeRangeableChart(chartId, fullLabels, fullDatasets, chartOptions) {
 
 // 売上高=bar(cyan)、営業利益・経常利益=line(green/yellow)、左右2軸。ステップ5（1株配当・配当性向、配当利回り）も同じ makeRangeableChart() で実装する。
 makeRangeableChart('chart-step3', [/* labels */], [/* datasets */], { /* options */ });
+
+// ---- 凡例に「名称 (割合%)」を表示する円グラフ用ヘルパー。セグメント構成比（売上高・営業利益）はこれを使う ----
+// generateLabelsを上書きする場合、Chart.js v4はラベル項目にfontColor/colorが無いと黒文字で描画してしまうため、
+// 明示的に dracula.fg を fontColor と color の両方に指定する（このバグ対策が肝）。
+function pieLegendWithPercent(chart) {
+  const data = chart.data;
+  const total = data.datasets[0].data.reduce((a, b) => a + b, 0);
+  return data.labels.map((label, i) => {
+    const value = data.datasets[0].data[i];
+    const pct = (value / total * 100).toFixed(1);
+    return {
+      text: `${label} (${pct}%)`,
+      fillStyle: data.datasets[0].backgroundColor[i],
+      strokeStyle: data.datasets[0].backgroundColor[i],
+      fontColor: dracula.fg,
+      color: dracula.fg,
+      index: i
+    };
+  });
+}
+
+// labels: セグメント名の配列。values: 売上高または営業利益の絶対値（構成比であって率ではないこと。営業利益率のような
+// 「全体に占める割合ではない」指標はこのグラフに使わない）。title: グラフタイトル。
+function makePieChart(chartId, labels, values, title) {
+  return new Chart(document.getElementById(chartId), {
+    type: 'pie',
+    data: { labels: labels, datasets: [{ data: values, backgroundColor: pieColors }] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'bottom', labels: { color: dracula.fg, generateLabels: pieLegendWithPercent } },
+        title: { display: true, text: title, color: dracula.fg }
+      }
+    }
+  });
+}
+
+// 使用例（ステップ2のセグメント別売上高構成比・営業利益構成比。2つを横並びに配置する場合は上記の
+// flex containerマークアップと組み合わせる）:
+// makePieChart('chart-step2-sales', ['セグメントA', 'セグメントB'], [206, 17], '事業セグメント別 売上高構成比（億円、◯年度実績）');
+// makePieChart('chart-step2-profit', ['セグメントA', 'セグメントB'], [19.0, 5.2], '事業セグメント別 営業利益構成比（億円、◯年度実績）');
 </script>
 </body>
 </html>
