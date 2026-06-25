@@ -105,3 +105,4 @@ IRBANKから可能な限り遡って（最低10年、可能ならリーマンシ
 - **HTML/CSSは既存レポート（`analysis_results/7438_コンドーテック/`、`analysis_results/7971_東リ/`等）と同一フォーマットを使い回す。** 新規にレイアウトを考案しない。テンプレート本体は `.claude/skills/jp-stock-analysis/templates/report.html` を参照（Readツールで読み込み、`{{会社名}}`等のプレースホルダーを実データで埋めて使う）。Draculaパレットのカラークラス（`summary-grid`/`summary-card`、`toc`、`highlight-box`＝紫枠で計算式や公式方針の引用、`warn-box`＝オレンジ枠で注意喚起、`badge-cheap`/`badge-good`/`badge-neutral`、`chart-box`等）はテンプレートの定義をそのまま使う。
 - ステップ11のシミュレーション表は、コンドーテック・東リのレポートと同じ列構成（左から「株価／EPS／BPS／配当／PER／PBR／配当性向／配当利回り」を行、列を「基準年(今期)〜10年後」の11列＝合計11時点）で、5パターン全てを `<h3>` で区切って描く。
 - 出典（IRBANK／公式IR／有報／ニュース記事のURL）は `<div class="src">` または脚注（`<p class="note">`）として残す。
+- HTMLファイルの作成が完了したら、レイアウトの崩れ等の見た目の確認はClaude自身では行わず、ユーザーにブラウザで開いて確認してもらうよう依頼する。
