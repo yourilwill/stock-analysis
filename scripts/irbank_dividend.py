@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""銘柄コードと年度を指定して、IRBANKから1株当たり年間配当金(円)と配当利回り(%)を取得するCLIツール。
+"""IRBANKから1株当たり年間配当金(円)と配当利回り(%)を取得するCLIツール。
 
 使い方:
+    # 全年度を一括取得（ステップ5推奨: 連続増配年数・平均利回りも自動計算）
+    python3 irbank_dividend.py <銘柄コード> --all
+    python3 irbank_dividend.py 1605 --all
+    python3 irbank_dividend.py 1419 --all --adjusted   # 株式分割調整後の値を使う
+
+    # 特定年度のみ取得
     python3 irbank_dividend.py <銘柄コード> <年度>
     python3 irbank_dividend.py 1605 2025
-    python3 irbank_dividend.py 1419 2026 --adjusted   # 株式分割調整後の値を使う
 
 「<年度>」は IRBANK の表に書かれている「YYYY年X月期」のYYYY部分(決算月は問わない)に対応する。
 同一年度に複数行(予想/修正/実績)がある場合は、表の中で最後に記載された行(最新の値)を採用する。
@@ -77,10 +82,12 @@ def fetch_dividend_table(code: str):
     while i < len(cells):
         attrs, text = cells[i]
         year_match = re.search(r"(\d{4})年", text)
+        month_match = re.search(r"(\d{1,2})月", text)  # "2010年9月" or "2010年9月期" 両対応
         rowspan_match = re.search(r'rowspan="(\d+)"', attrs)
         if not year_match or not rowspan_match:
             raise ValueError("配当テーブルの解析に失敗しました(IRBANKのページ構造が変更された可能性があります)")
         year = int(year_match.group(1))
+        month = int(month_match.group(1)) if month_match else None
         rowspan = int(rowspan_match.group(1))
         i += 1
 
@@ -99,7 +106,7 @@ def fetch_dividend_table(code: str):
                 if "配当利回り" in sub_index else None
             )
             rows.append({"status": status, "total": total, "adjusted": adjusted, "yield": dividend_yield})
-        groups.append({"year": year, "rows": rows})
+        groups.append({"year": year, "month": month, "rows": rows})
 
     return company_name, groups, url
 
@@ -132,12 +139,113 @@ def get_dividend(code: str, year: int, use_adjusted: bool = False):
     }
 
 
+def get_all_dividends(code: str, use_adjusted: bool = False):
+    """全年度の配当データを一括取得し、連続増配・非減配年数・平均利回りも計算して返す。"""
+    company_name, groups, url = fetch_dividend_table(code)
+    key = "adjusted" if use_adjusted else "total"
+
+    rows = []
+    for g in groups:
+        # 各年度の最新値（実績優先）を選択
+        latest = None
+        for row in reversed(g["rows"]):
+            if row[key] is not None:
+                latest = row
+                break
+        if latest is None:
+            latest = g["rows"][-1]
+        month = g.get("month")
+        label = f"{g['year']}/{month:02d}" if month else str(g["year"])
+        rows.append({
+            "year": g["year"],
+            "month": month,
+            "label": label,
+            "status": latest["status"],
+            "dividend": latest[key],
+            "yield": latest["yield"],
+        })
+
+    # 実績行のみで連続増配・非減配を計算（予想行は除外）
+    actual_rows = [r for r in rows if "実績" in r["status"] and r["dividend"] is not None]
+
+    consecutive_increase = 0
+    consecutive_no_cut = 0
+    for i in range(len(actual_rows) - 1, 0, -1):
+        curr = actual_rows[i]["dividend"]
+        prev = actual_rows[i - 1]["dividend"]
+        if curr > prev:
+            consecutive_increase += 1
+        else:
+            consecutive_increase = 0
+            break
+    for i in range(len(actual_rows) - 1, 0, -1):
+        curr = actual_rows[i]["dividend"]
+        prev = actual_rows[i - 1]["dividend"]
+        if curr >= prev:
+            consecutive_no_cut += 1
+        else:
+            break
+
+    # 過去5年間の実績配当利回り平均
+    actual_with_yield = [r for r in actual_rows if r["yield"] is not None]
+    recent5 = actual_with_yield[-5:] if len(actual_with_yield) >= 5 else actual_with_yield
+    avg_yield_5y = sum(r["yield"] for r in recent5) / len(recent5) if recent5 else None
+
+    return {
+        "company_name": company_name,
+        "code": code,
+        "rows": rows,
+        "actual_rows": actual_rows,
+        "consecutive_increase": consecutive_increase,
+        "consecutive_no_cut": consecutive_no_cut,
+        "avg_yield_5y": avg_yield_5y,
+        "avg_yield_5y_years": [r["year"] for r in recent5],
+        "source_url": url,
+    }
+
+
 def main():
-    parser = argparse.ArgumentParser(description="IRBANKから指定銘柄・年度の配当金を取得する")
+    parser = argparse.ArgumentParser(description="IRBANKから配当金を取得する")
     parser.add_argument("code", help="銘柄コード (例: 1605)")
-    parser.add_argument("year", type=int, help="年度 (例: 2025)")
+    parser.add_argument("year", type=int, nargs="?", help="年度 (例: 2025)。--all モード時は省略可。")
+    parser.add_argument("--all", action="store_true", dest="all_years",
+                        help="全年度データを一括表示し、連続増配年数・平均利回りも計算する（ステップ5推奨）")
     parser.add_argument("--adjusted", action="store_true", help="株式分割調整後の値を使う")
     args = parser.parse_args()
+
+    if args.all_years:
+        try:
+            result = get_all_dividends(args.code, args.adjusted)
+        except (ValueError, requests.RequestException) as e:
+            print(f"エラー: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"{result['company_name']}({args.code}) 配当履歴 (全件)")
+        print(f"{'年度':<10} {'区分':6} {'1株配当(円)':>12} {'配当利回り':>10}")
+        print("-" * 44)
+        for r in result["rows"]:
+            div_str = f"{r['dividend']}" if r["dividend"] is not None else "-"
+            yld_str = f"{r['yield']}%" if r["yield"] is not None else "-"
+            print(f"{r['label']:<10} {r['status']:6} {div_str:>12} {yld_str:>10}")
+        print("-" * 44)
+
+        ci = result["consecutive_increase"]
+        cn = result["consecutive_no_cut"]
+        ay = result["avg_yield_5y"]
+        yrs = result["avg_yield_5y_years"]
+        yr_range = f"{yrs[0]}〜{yrs[-1]}年度" if yrs else "-"
+
+        print(f"連続増配年数       : {ci}年")
+        print(f"連続非減配年数     : {cn}年")
+        if ay is not None:
+            print(f"過去5年平均配当利回り（実績）: {ay:.2f}%  ※{yr_range}")
+        print(f"出典: {result['source_url']}")
+        return
+
+    # 特定年度モード
+    if args.year is None:
+        print("エラー: 年度を指定するか --all を付けてください", file=sys.stderr)
+        sys.exit(1)
 
     try:
         result = get_dividend(args.code, args.year, args.adjusted)
