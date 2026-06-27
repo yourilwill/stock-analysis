@@ -6,6 +6,7 @@
     python3 irbank_bs.py 6817
     python3 irbank_bs.py E01971
     python3 irbank_bs.py 6817 --years 5
+    python3 irbank_bs.py 2169 --detail   # ステップ10用: 最新期の詳細BS＋ネットキャッシュ計算
 """
 import argparse
 import re
@@ -45,6 +46,65 @@ def fmt(v) -> str:
     if isinstance(v, int):
         return f"{v:,}"
     return f"{v:,.1f}"
+
+
+def resolve_ecode(code: str) -> str:
+    if re.match(r"^E\d+$", code, re.I):
+        return code.upper()
+    resp = requests.get(f"https://irbank.net/{code}", headers={"User-Agent": UA}, timeout=15, allow_redirects=True)
+    resp.raise_for_status()
+    m = re.search(r'href="/(E\d{5})', resp.text)
+    if m:
+        return m.group(1)
+    raise ValueError(f"Eコードが解決できませんでした（コード: {code}）")
+
+
+def get_latest_annual_doc_id(ecode: str) -> str:
+    """CFサマリーページから最新の有価証券報告書のdoc_idを取得する。"""
+    url = f"https://irbank.net/{ecode}/cf"
+    resp = requests.get(url, headers={"User-Agent": UA}, timeout=20)
+    resp.raise_for_status()
+    tbody = re.search(r"<tbody>(.*?)</tbody>", resp.text, re.S)
+    if not tbody:
+        raise ValueError(f"CFテーブルが見つかりません: {url}")
+    annual_docs = re.findall(r'href="(S\w+)/cf">通期</a>', tbody.group(1))
+    if not annual_docs:
+        raise ValueError(f"通期報告書のdoc_idが見つかりません: {url}")
+    return annual_docs[-1]  # 最新期
+
+
+def fetch_bs_detail(ecode: str, doc_id: str):
+    """最新期の詳細BS（ステップ10: ネットキャッシュ計算用）を取得する。
+
+    Returns:
+        data: 行ラベル→最新期値の辞書
+        unit: 単位文字列（"千円" or "百万円"）
+        url: 取得元URL
+    """
+    url = f"https://irbank.net/{ecode}/{doc_id}/bs"
+    resp = requests.get(url, headers={"User-Agent": UA}, timeout=20)
+    resp.raise_for_status()
+
+    # 単位を caption から取得（「千円」か「百万円」）
+    cap_m = re.search(r"<caption[^>]*>.*?（(千円|百万円)）", resp.text, re.S)
+    unit = cap_m.group(1) if cap_m else "千円"
+
+    t_m = re.search(r"<table[^>]*>(.*?)</table>", resp.text, re.S)
+    if not t_m:
+        raise ValueError(f"BSテーブルが見つかりません: {url}")
+
+    data = {}
+    for row in re.findall(r"<tr[^>]*>(.*?)</tr>", t_m.group(1), re.S):
+        cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row, re.S)
+        vals = [re.sub(r"<[^>]+>", "", c).replace("　", "").replace(",", "").replace("－", "0").strip() for c in cells]
+        if len(vals) >= 2:
+            label = vals[0]
+            value = vals[-1]  # 最後の列 = 最新期
+            # 空値はスキップし、値のある初出のラベルを優先
+            if label not in data and value:
+                data[label] = value
+
+    return data, unit, url
 
 
 def fetch_bs(code: str):
@@ -114,6 +174,7 @@ def main():
     parser = argparse.ArgumentParser(description="IRBANKから財務推移(BS)を取得")
     parser.add_argument("code", help="銘柄コード(例: 6817) または Eコード(例: E01971)")
     parser.add_argument("--years", type=int, default=None, help="直近N期分のみ表示 (省略時: 全件)")
+    parser.add_argument("--detail", action="store_true", help="最新期の詳細BS＋ネットキャッシュ計算を追加出力（ステップ10用）")
     args = parser.parse_args()
 
     try:
@@ -140,6 +201,76 @@ def main():
             f"{eq_r:>12} {debt_r:>14}"
         )
     print(f"出典: {url}")
+
+    if not args.detail:
+        return
+
+    # --detail: 最新期の詳細BS＋ネットキャッシュ計算（ステップ10用）
+    try:
+        ecode = resolve_ecode(args.code)
+        doc_id = get_latest_annual_doc_id(ecode)
+        detail, unit, detail_url = fetch_bs_detail(ecode, doc_id)
+    except (ValueError, requests.RequestException) as e:
+        print(f"エラー: {e}", file=sys.stderr)
+        return
+
+    print()
+    print(f"【最新期の詳細BS・{unit}（ネットキャッシュ計算用）】")
+
+    def get_int(*keys: str):
+        """優先順にキーを試し、最初に見つかった非空の値をintで返す（J-GAAP/IFRS両対応）。"""
+        for key in keys:
+            raw = detail.get(key, "")
+            if not raw:
+                continue
+            raw = raw.replace("△", "-").replace("▲", "-").replace("−", "-")
+            try:
+                return int(float(raw))
+            except (ValueError, TypeError):
+                continue
+        return None
+
+    # J-GAAPのラベルを優先し、IFRSラベルをフォールバックとして列挙
+    current_assets = get_int("流動資産計", "流動資産合計")
+    inv_securities = get_int("投資有価証券")
+    current_liab = get_int("流動負債計", "流動負債合計")
+    fixed_liab = get_int("固定負債計", "非流動負債合計")
+    total_liab = get_int("負債の部合計", "負債合計")
+    equity_total = get_int("株主資本合計", "親会社の所有者に帰属する持分合計")
+    net_assets = get_int("純資産の部合計", "資本合計", "持分合計")
+    cash = get_int("現金及び預金", "現金及び現金同等物", "現金及び現金同等物（IFRS）")
+    treasury = get_int("自己株式")
+
+    def fk(v):
+        return f"{v:,}" if v is not None else "-"
+
+    print(f"  流動資産合計    : {fk(current_assets):>14}")
+    print(f"  投資有価証券    : {fk(inv_securities):>14}")
+    print(f"  負債合計        : {fk(total_liab):>14}")
+    print(f"    うち流動負債  : {fk(current_liab):>14}")
+    print(f"    うち固定負債  : {fk(fixed_liab):>14}")
+    print(f"  株主資本合計    : {fk(equity_total):>14}")
+    print(f"  純資産合計      : {fk(net_assets):>14}")
+    print(f"  現金及び預金    : {fk(cash):>14}")
+    print(f"  自己株式        : {fk(treasury):>14}")
+
+    # ネットキャッシュ計算
+    if current_assets is not None and total_liab is not None:
+        inv_adj = round((inv_securities or 0) * 0.7)
+        net_cash = current_assets + inv_adj - total_liab
+        # 百万円換算（千円単位なら÷1000、百万円単位ならそのまま）
+        net_cash_m = round(net_cash / 1000) if unit == "千円" else net_cash
+        print()
+        print("【ネットキャッシュ計算】")
+        inv_str = f"({fk(inv_securities)}×70%={fk(inv_adj)})" if inv_securities else ""
+        print(f"  ネットキャッシュ = 流動資産 + 投資有価証券×70% - 総負債")
+        print(f"                   = {fk(current_assets)} + {fk(inv_adj)} {inv_str} - {fk(total_liab)}")
+        if unit == "千円":
+            print(f"                   = {fk(net_cash)}{unit} (≒{net_cash_m:,}百万円)")
+        else:
+            print(f"                   = {fk(net_cash)}百万円")
+
+    print(f"出典: {detail_url}")
 
 
 if __name__ == "__main__":
