@@ -11,6 +11,8 @@ import re
 import sys
 import requests
 
+from irbank_utils import fetch_with_retry
+
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 
 
@@ -38,8 +40,7 @@ def fmt(v) -> str:
 
 def fetch_pl(code: str):
     url = f"https://irbank.net/{code}/pl?tm=100"
-    resp = requests.get(url, headers={"User-Agent": UA}, timeout=20, allow_redirects=True)
-    resp.raise_for_status()
+    resp = fetch_with_retry(url, allow_redirects=True)
     html = resp.text
 
     name_m = re.search(r'<meta property="og:title" content="([^（\(]+)', html)

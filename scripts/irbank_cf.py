@@ -15,6 +15,8 @@ import re
 import sys
 import requests
 
+from irbank_utils import fetch_with_retry
+
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 
 
@@ -41,8 +43,7 @@ def fmt(v) -> str:
 def resolve_ecode(code: str) -> str:
     if re.match(r"^E\d+$", code, re.I):
         return code.upper()
-    resp = requests.get(f"https://irbank.net/{code}", headers={"User-Agent": UA}, timeout=15, allow_redirects=True)
-    resp.raise_for_status()
+    resp = fetch_with_retry(f"https://irbank.net/{code}", allow_redirects=True)
     m = re.search(r'href="/(E\d{5})', resp.text)
     if m:
         return m.group(1)
@@ -51,8 +52,7 @@ def resolve_ecode(code: str) -> str:
 
 def fetch_cf_summary(ecode: str):
     url = f"https://irbank.net/{ecode}/cf"
-    resp = requests.get(url, headers={"User-Agent": UA}, timeout=20)
-    resp.raise_for_status()
+    resp = fetch_with_retry(url)
     html = resp.text
 
     name_m = re.search(r'<meta property="og:title" content="([^（\(]+)', html)
@@ -107,8 +107,7 @@ def fetch_cf_detail(ecode: str, doc_id: str):
         url: 取得元URL
     """
     url = f"https://irbank.net/{ecode}/{doc_id}/cf"
-    resp = requests.get(url, headers={"User-Agent": UA}, timeout=20)
-    resp.raise_for_status()
+    resp = fetch_with_retry(url)
 
     # 単位を caption から取得（「千円」か「百万円」）
     cap_m = re.search(r"<caption[^>]*>.*?（(千円|百万円)）", resp.text, re.S)

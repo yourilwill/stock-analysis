@@ -19,6 +19,8 @@ import re
 import sys
 import requests
 
+from irbank_utils import fetch_with_retry
+
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 
 
@@ -48,8 +50,7 @@ def parse_percent(s: str):
 
 def fetch_dividend_table(code: str):
     url = f"https://irbank.net/{code}/dividend"
-    resp = requests.get(url, headers={"User-Agent": UA}, timeout=15, allow_redirects=True)
-    resp.raise_for_status()
+    resp = fetch_with_retry(url, allow_redirects=True)
     html = resp.text
 
     name_match = re.search(r'<meta property="og:title" content="([^（]+)', html)
