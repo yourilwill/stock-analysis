@@ -68,13 +68,15 @@ def fetch_pl(code: str):
                     return i - 1  # row内のインデックス（0=四半期セル）
         return None
 
-    rev_idx = find_col(["売上収益", "収益", "売上高"])
-    op_idx = find_col(["営業利益"])
+    rev_idx = find_col(["売上収益", "収益", "売上高", "経常収益"])
+    op_idx = find_col(["営業利益"])  # 銀行業では存在しない（None許容）
     ord_idx = find_col(["経常利益"])
     net_idx = find_col(["当期利益", "当期純利益"])
 
-    if any(x is None for x in [rev_idx, op_idx, ord_idx, net_idx]):
+    if any(x is None for x in [rev_idx, ord_idx, net_idx]):
         raise ValueError(f"PLテーブルの列が見つかりません (headers={headers})")
+
+    is_bank = op_idx is None  # 営業利益列がない場合は銀行業と判定
 
     tbody_m = re.search(r"<tbody>(.*?)</tbody>", table, re.S)
     if not tbody_m:
@@ -113,7 +115,7 @@ def fetch_pl(code: str):
                 "label": f"{year}/{month:02d}",
                 "type": "実績" if is_actual else ("予想" if is_forecast else ""),
                 "rev": parse_number(row[rev_idx][1]),
-                "op": parse_number(row[op_idx][1]),
+                "op": parse_number(row[op_idx][1]) if op_idx is not None else None,
                 "ord": parse_number(row[ord_idx][1]),
                 "net": parse_number(row[net_idx][1]),
             })
@@ -143,12 +145,22 @@ def main():
         print(f"エラー: {company}({args.code}) の通期データが取得できませんでした", file=sys.stderr)
         sys.exit(1)
 
-    print(f"{company}({args.code}) 損益推移・百万円 (通期実績＋直近予想)")
-    print(f"{'年度':<10} {'区分':4} {'収益(売上高)':>12} {'営業利益':>10} {'経常利益':>10} {'当期利益':>10} {'営業利益率':>10}")
-    print("-" * 72)
-    for r in display:
-        op_rate = f"{r['op'] / r['rev'] * 100:.1f}%" if r["rev"] and r["op"] is not None else "-"
-        print(f"{r['label']:<10} {r['type']:4} {fmt(r['rev']):>12} {fmt(r['op']):>10} {fmt(r['ord']):>10} {fmt(r['net']):>10} {op_rate:>10}")
+    # 銀行業かどうかはfetch_pl()の戻り値から判定できないため、op列が全Noneか確認
+    all_op_none = all(r["op"] is None for r in display)
+    if all_op_none:
+        print(f"{company}({args.code}) 損益推移・百万円 (通期実績＋直近予想) [銀行業]")
+        print(f"{'年度':<10} {'区分':4} {'経常収益':>12} {'経常利益':>10} {'当期利益':>10} {'経常利益率':>10}")
+        print("-" * 62)
+        for r in display:
+            ord_rate = f"{r['ord'] / r['rev'] * 100:.1f}%" if r["rev"] and r["ord"] is not None else "-"
+            print(f"{r['label']:<10} {r['type']:4} {fmt(r['rev']):>12} {fmt(r['ord']):>10} {fmt(r['net']):>10} {ord_rate:>10}")
+    else:
+        print(f"{company}({args.code}) 損益推移・百万円 (通期実績＋直近予想)")
+        print(f"{'年度':<10} {'区分':4} {'収益(売上高)':>12} {'営業利益':>10} {'経常利益':>10} {'当期利益':>10} {'営業利益率':>10}")
+        print("-" * 72)
+        for r in display:
+            op_rate = f"{r['op'] / r['rev'] * 100:.1f}%" if r["rev"] and r["op"] is not None else "-"
+            print(f"{r['label']:<10} {r['type']:4} {fmt(r['rev']):>12} {fmt(r['op']):>10} {fmt(r['ord']):>10} {fmt(r['net']):>10} {op_rate:>10}")
     print(f"出典: {url}")
 
 
