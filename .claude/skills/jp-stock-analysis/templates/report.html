@@ -125,11 +125,11 @@
 <script>
 // CSSの data-theme と同じキーで、Chart.js用の配色を対応させる（<html data-theme="..."> を変えるだけで両方切り替わる）。
 const palettes = {
-  dracula: { cyan: '#8be9fd', green: '#50fa7b', yellow: '#f1fa8c', fg: '#f8f8f2', grid: '#44475a',
+  dracula: { cyan: '#8be9fd', green: '#50fa7b', yellow: '#f1fa8c', orange: '#ffb86c', fg: '#f8f8f2', grid: '#44475a',
     pie: ['#8be9fd', '#ff79c6', '#50fa7b', '#ffb86c', '#bd93f9', '#ff5555'] },
-  'catppuccin-mocha': { cyan: '#89dceb', green: '#a6e3a1', yellow: '#f9e2af', fg: '#cdd6f4', grid: '#45475a',
+  'catppuccin-mocha': { cyan: '#89dceb', green: '#a6e3a1', yellow: '#f9e2af', orange: '#fab387', fg: '#cdd6f4', grid: '#45475a',
     pie: ['#89dceb', '#f5c2e7', '#a6e3a1', '#fab387', '#cba6f7', '#f38ba8'] },
-  'catppuccin-latte': { cyan: '#04a5e5', green: '#40a02b', yellow: '#df8e1d', fg: '#4c4f69', grid: '#8c8fa1',
+  'catppuccin-latte': { cyan: '#04a5e5', green: '#40a02b', yellow: '#df8e1d', orange: '#fe640b', fg: '#4c4f69', grid: '#8c8fa1',
     pie: ['#04a5e5', '#ea76cb', '#40a02b', '#fe640b', '#8839ef', '#d20f39'] }
 };
 const theme = palettes[document.documentElement.dataset.theme] || palettes.dracula;
@@ -161,7 +161,11 @@ function makeRangeableChart(chartId, fullLabels, fullDatasets, chartOptions) {
   return chart;
 }
 
-// 売上高=bar(cyan)、営業利益・経常利益=line(green/yellow)、左右2軸。ステップ5（1株配当・配当性向、配当利回り）も同じ makeRangeableChart() で実装する。
+// 売上高=bar(cyan)、営業利益=line(green)、経常利益=line(orange。yellowは棒の水色と識別しづらいため不可)、左右2軸。ステップ5（1株配当・配当性向、配当利回り）も同じ makeRangeableChart() で実装する。
+// 配当(bar)＋配当性向(line)の複合グラフは、配当性向lineの色にtheme.orangeを使う（yellowはbarの水色/ピンクと識別しづらいため不可）。
+// ステップ6（自己株式取得額bar＋総還元性向line、右軸）も同じ構成で、barはtheme.pink、lineはtheme.orangeを使う。
+// また、Chart.jsはorder未指定だと配列の先頭（bar）が最前面に描画され、後続のlineが隠れてしまうため、
+// bar側に order: 2、line側に order: 1 を明示指定してlineを前面に描画する。
 makeRangeableChart('chart-step3', [/* labels */], [/* datasets */], { /* options */ });
 
 // ---- 凡例に「名称 (割合%)」を表示する円グラフ用ヘルパー。セグメント構成比（売上高・営業利益）はこれを使う ----

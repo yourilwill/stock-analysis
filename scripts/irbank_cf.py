@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""IRBANKから指定銘柄のキャッシュフロー推移と最新期の財務CF内訳を取得するCLIツール。
+"""IRBANKから指定銘柄のキャッシュフロー推移と財務CF内訳を取得するCLIツール。
 
-ステップ6（自社株買い実績・総還元性向）に使用。CF推移（年次）と最新期の
-配当金支払額・自己株式取得額を一括取得するため、有報PDFの参照が不要になる。
+ステップ6（自社株買い実績・総還元性向）に使用。CF推移（年次）と財務CF内訳
+（配当金支払額・自己株式取得額）を一括取得するため、有報PDFの参照が不要になる。
+--all指定時は全年度分の財務CF内訳（自己株式取得額の複数年推移）を取得する。
 
 使い方:
     python3 irbank_cf.py <銘柄コード or Eコード>
     python3 irbank_cf.py 2169
     python3 irbank_cf.py E05726
+    python3 irbank_cf.py 3834 --all   # 全年度の自己株式取得額・配当金支払額を取得
 """
 import argparse
 import html as html_mod
@@ -141,9 +143,31 @@ def fetch_cf_detail(ecode: str, doc_id: str):
     return fin_data, unit, url
 
 
+def to_million(raw: str, unit: str) -> str:
+    """値を百万円換算して文字列で返す。千円単位なら÷1000、百万円単位はそのまま。"""
+    raw = raw.replace("△", "-").replace("▲", "-").replace("−", "-")
+    try:
+        val = int(float(raw))
+    except (ValueError, TypeError):
+        return raw
+    if unit == "千円":
+        return f"{round(val / 1000):,}百万円"
+    return f"{val:,}百万円"
+
+
+def find_raw(fin_data: dict, keyword: str):
+    """fin_data のラベルに keyword を含む項目の生の値（文字列）を返す。無ければNone。"""
+    for label, raw in fin_data.items():
+        if keyword in label:
+            return raw
+    return None
+
+
 def main():
-    parser = argparse.ArgumentParser(description="IRBANKからCF推移・最新期財務CF内訳を取得（ステップ6用）")
+    parser = argparse.ArgumentParser(description="IRBANKからCF推移・財務CF内訳を取得（ステップ6用）")
     parser.add_argument("code", help="銘柄コード(例: 2169) または Eコード(例: E05726)")
+    parser.add_argument("--all", action="store_true", dest="all_years",
+                         help="全年度分の自己株式取得額・配当金支払額の推移を取得する")
     args = parser.parse_args()
 
     try:
@@ -174,23 +198,12 @@ def main():
         fin_data, unit, detail_url = fetch_cf_detail(ecode, latest["doc_id"])
         print(f"【最新期({latest['label']})財務CF内訳・{unit}】")
 
-        def to_m(raw: str, unit: str) -> str:
-            """値を百万円換算して文字列で返す。千円単位なら÷1000、百万円単位はそのまま。"""
-            raw = raw.replace("△", "-").replace("▲", "-").replace("−", "-")
-            try:
-                val = int(float(raw))
-            except (ValueError, TypeError):
-                return raw
-            if unit == "千円":
-                return f"{round(val / 1000):,}百万円"
-            return f"{val:,}百万円"
-
         # 財務活動CF区分のうち「合計」行と空値を除いた全項目を出力
         skip = {"財務活動によるキャッシュ・フロー"}
         for key, raw in fin_data.items():
             if key in skip:
                 continue
-            val_str = to_m(raw, unit)
+            val_str = to_million(raw, unit)
             # 空・ゼロ・変換不能は「-」表示
             if not raw or raw in ("0",):
                 val_str = "-"
@@ -203,6 +216,25 @@ def main():
     except requests.RequestException as e:
         print(f"  財務CF詳細の取得に失敗しました: {e}", file=sys.stderr)
         print(f"出典: {summary_url}")
+
+    # --all: 全年度分の自己株式取得額・配当金支払額の推移を取得
+    if args.all_years:
+        print()
+        print(f"【全年度 自己株式取得額・配当金支払額の推移・百万円】")
+        print(f"{'年度':<10} {'自己株式取得額':>14} {'配当金支払額':>12}")
+        print("-" * 40)
+        for r in rows:
+            try:
+                r_fin_data, r_unit, _ = fetch_cf_detail(ecode, r["doc_id"])
+            except requests.RequestException as e:
+                print(f"{r['label']:<10} {'取得失敗':>14} ({e})", file=sys.stderr)
+                continue
+            treasury_raw = find_raw(r_fin_data, "自己株式の取得")
+            dividend_raw = find_raw(r_fin_data, "配当金の支払")
+            treasury_str = to_million(treasury_raw, r_unit) if treasury_raw not in (None, "", "0") else ("-" if treasury_raw is None else "0百万円")
+            dividend_str = to_million(dividend_raw, r_unit) if dividend_raw not in (None, "", "0") else ("-" if dividend_raw is None else "0百万円")
+            print(f"{r['label']:<10} {treasury_str:>14} {dividend_str:>12}")
+        print(f"出典: {summary_url}（各年度の詳細ページを個別に参照）")
 
 
 if __name__ == "__main__":
