@@ -177,7 +177,6 @@ def get_all_dividends(code: str, use_adjusted: bool = False):
         if curr > prev:
             consecutive_increase += 1
         else:
-            consecutive_increase = 0
             break
     for i in range(len(actual_rows) - 1, 0, -1):
         curr = actual_rows[i]["dividend"]
