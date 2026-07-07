@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """IRBANKスクリプト共通ユーティリティ。
 
-fetch_with_retry: タイムアウト・5xxエラー時に自動リトライするGETラッパー。
+fetch_with_retry: タイムアウト・5xxエラー・429時に自動リトライするGETラッパー。
 各スクリプトは `from irbank_utils import fetch_with_retry` でインポートして使う。
 """
 import time
@@ -10,14 +10,14 @@ import requests
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 
-_RETRY_STATUS = {500, 502, 503, 504}
+_RETRY_STATUS = {429, 500, 502, 503, 504}
 
 
 def fetch_with_retry(url: str, timeout: int = 30, retries: int = 3, **kwargs) -> requests.Response:
-    """タイムアウト・5xxエラーを最大retries回リトライするGETリクエスト。
+    """タイムアウト・5xxエラー・429を最大retries回リトライするGETリクエスト。
 
     - Timeout / ConnectionError: 指数バックオフ（1, 2, 4秒）でリトライ
-    - 500 / 502 / 503 / 504: 同上でリトライ
+    - 429 / 500 / 502 / 503 / 504: 同上でリトライ（429はRetry-Afterヘッダーがあれば優先）
     - その他のHTTPエラー / 4xx: 即座に例外を再送出
     """
     headers = kwargs.pop("headers", {"User-Agent": UA})
@@ -33,7 +33,15 @@ def fetch_with_retry(url: str, timeout: int = 30, retries: int = 3, **kwargs) ->
             raise
         if resp.status_code in _RETRY_STATUS and attempt < retries - 1:
             last_exc = Exception(f"HTTP {resp.status_code} (リトライ {attempt + 1}/{retries}): {url}")
-            time.sleep(2 ** attempt)
+            wait = 2 ** attempt
+            if resp.status_code == 429:
+                retry_after = resp.headers.get("Retry-After")
+                if retry_after is not None:
+                    try:
+                        wait = float(retry_after)
+                    except ValueError:
+                        pass
+            time.sleep(wait)
             continue
         resp.raise_for_status()
         return resp
