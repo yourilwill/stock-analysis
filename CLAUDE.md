@@ -2,17 +2,28 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## 現在の状態
+## リポジトリの目的
 
-このリポジトリは現時点では空です（ソースコード・README・ビルド設定はまだありません）。そのため、ビルド・lint・テストのコマンドや、説明すべきアーキテクチャもまだ存在しません。
+日本株（Japanese stock）の個別銘柄について、Claude Codeが13ステップの定性・定量分析を行い、HTMLレポートを出力するためのリポジトリ。分析ロジックは `.claude/skills/jp-stock-analysis/SKILL.md` にSkillとして定義されている。
 
-## 進め方
+## ディレクトリ構成
 
-このリポジトリは日本株（Japanese stock）の銘柄分析を目的としているが、現時点ではPythonなどの開発環境構築は行わない方針。
+- `.claude/skills/jp-stock-analysis/` — 銘柄分析Skill本体（`SKILL.md`）とHTMLレポートのテンプレート（`templates/report.html`）。
+- `scripts/` — IRBANK（https://irbank.net/）から指標・財務データを取得するPython CLIツール群。WebFetchより大幅にコンテキストを節約するため、Skillの各ステップから呼び出される。
+- `analysis_results/` — 分析結果の出力先（`<証券コード>_<会社名>/` ごとにraw_data・HTMLレポートを格納）。**gitignore対象のためリポジトリには含まれず、マシンごとにローカルへ蓄積される。**
 
-代わりに、ユーザーが具体的な銘柄について分析作業をその場で指示し、Claude Codeがその都度分析を実施する。分析作業が固まったら、再利用できる形で `Skill` として登録していく運用とする。
+## 開発環境
 
-コード基盤（pip/requirements.txt、notebook構成など）が実際に必要になった時点で、このファイルを実際のコマンドとモジュール構成の説明で更新すること。プレースホルダーのまま放置しないこと。
+- Python 3.10以上、`requests` ライブラリが必要（`pip install -r requirements.txt`）。
+- `scripts/` 配下は単体のCLIツールとして `python3 scripts/irbank_xxx.py <銘柄コード or Eコード>` の形で実行する。ビルド・lint・テストの仕組みは無い。
+
+## 使い方
+
+具体的な銘柄について「〇〇を分析して」のように指示すると、`jp-stock-analysis` Skillが起動し13ステップの分析を行う。分析ロジックの詳細・各ステップの担当範囲・サブエージェントへの並列委譲方針はSKILL.mdを参照。分析作業のやり方が固まったら、再利用できる形でSkillを更新していく運用とする。
+
+## 権限設定について
+
+`.claude/settings.local.json`（WebFetch許可ドメイン、git操作の許可等）は**gitignore対象でマシンごとに独立している**。新しい環境で使い始める場合、分析対象企業の公式サイトドメインへのWebFetch許可などが初回に都度求められる。
 
 ## ドキュメント作成方針
 
