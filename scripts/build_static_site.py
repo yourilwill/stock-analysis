@@ -138,9 +138,17 @@ def company_breadcrumb(company_dirname: str, filename: str) -> str:
 
 
 def build(src: Path, out: Path) -> int:
+    # outディレクトリ自体はrmtreeで作り直さず、中身だけ消す。
+    # 本番配信先(/var/www/stock-analysis等)は親ディレクトリがroot所有で、
+    # ディレクトリ自体の削除にはparentへの書き込み権限が要るため失敗しうる。
     if out.exists():
-        shutil.rmtree(out)
-    out.mkdir(parents=True)
+        for child in out.iterdir():
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+    else:
+        out.mkdir(parents=True)
     assets = out / "assets"
     assets.mkdir()
     (assets / "style.css").write_text(STYLE_CSS, encoding="utf-8")
