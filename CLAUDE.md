@@ -25,6 +25,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `.claude/settings.local.json`（WebFetch許可ドメイン、git操作の許可等）は**gitignore対象でマシンごとに独立している**。新しい環境で使い始める場合、分析対象企業の公式サイトドメインへのWebFetch許可などが初回に都度求められる。
 
+## 複数マシンでの運用について
+
+このリポジトリは複数のマシン（自宅PC、hestia＝ラズパイ上のClaude Code等）から`git clone`して同じSkill（`jp-stock-analysis`）で分析作業を行う運用を想定している。
+- `analysis_results/`はgitignore対象のため、リポジトリをcloneしただけでは他マシンの過去の分析実績は付いてこない。必要な場合は`rsync`等で保有者が手動同期する（自動同期の仕組みは無い）。ある時点で急に大量のファイルが増えている場合は、この手動同期によるもの。
+- 各マシンの分析結果はそれぞれのマシンにローカルに蓄積されていく想定で、どこか一箇所に集約する運用にはなっていない（今後変わる可能性はある）。
+- コード（`scripts/`・`.claude/skills/`）側の変更はこのリポジトリ経由で共有されるため、あるマシンで分析手順を改善したら、コミット・pushして他マシンにも`git pull`で反映するのが望ましい。
+
 ## ドキュメント作成方針
 
 README・CLAUDE.mdなど、このリポジトリ内のドキュメントは基本的に日本語で作成する。
