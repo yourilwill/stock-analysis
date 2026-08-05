@@ -15,6 +15,18 @@
 # （落ちると次のHTML更新まで誰も気づけないため）。ビルド失敗時は
 # /usr/local/lib/hestia-health/slack_notify.sh がある環境（hestia本体）
 # ではSlack通知する。
+#
+# 自己修復・多重起動防止（personal_memo issue #8、
+# design_doc/stock-analysis-watch-self-healing.md）:
+# - systemdのwatchdog機構（WatchdogSec）向けに、外側の待機ループ・デバウンス
+#   待ちループ・ビルド中いずれのフェーズでも一定間隔で`systemd-notify WATCHDOG=1`
+#   を送る。systemd側で`stock_analysis_watch_notify_enabled: true`にするまでは
+#   Type=simpleのままなのでこのpingは単に無視される（systemd-notifyはNOTIFY_SOCKET
+#   未設定なら何もしないため、Type=notify化前でも安全に呼べる）。
+# - 起動直後の初回ビルド後に`systemd-notify --ready`を送る。Type=notifyの
+#   ユニットはこれが来るまで「起動中」扱いのままになるため必須。
+# - `flock`で多重起動を防止する（issue #8で原因不明の重複プロセスが観測された
+#   ため、原因不問の防御策として導入）。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -24,6 +36,51 @@ DEBOUNCE_SEC=5
 EVENTS="close_write,create,delete,move"
 EXCLUDE='/_site/'
 SLACK_LIB="/usr/local/lib/hestia-health/slack_notify.sh"
+# ロックファイルの置き場所。本来は/run配下（tmpfs、OSセッション中だけ意味を持つ
+# 一時状態を置くのが筋なので）が望ましいが、/run直下はroot:root 755で非rootユーザー
+# (systemdユニットのUser=)からは新規作成できずPermission Deniedになる
+# （2026-08-05ヘパイストスレビュー指摘）。systemdのRuntimeDirectory=を使えば
+# 書き込み可能な専用ディレクトリを$RUNTIME_DIRECTORYとして渡してもらえるため、
+# personal_memo側のunitファイルにRuntimeDirectory=stock-analysis-site-watchが
+# 設定されればそちらを使う。未設定（systemd管理外での手動実行時など）は
+# WorkingDirectory配下（このリポジトリのclone先、gitignore対象）にフォールバックする。
+LOCK_FILE="${RUNTIME_DIRECTORY:-$(pwd)}/.watch_and_build.lock"
+WATCHDOG_POLL_SEC=20
+BUILD_HEARTBEAT_SEC=15
+HEARTBEAT_LOG_SEC=3600
+
+# 多重起動防止: ロックを取得できなければ既に別インスタンスが動いているとみなし、
+# 何もせず即終了する（マシン再起動をまたいで残ってもflockは非ブロッキングな
+# 排他制御なので実害は無い。前回インスタンスがクラッシュして解放されないままでも
+# 次回起動時にはプロセス終了とともにOSがロックを自動解放している）。
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "[$(date '+%F %T')] 既に別インスタンスが起動中のため終了します(ロック: $LOCK_FILE)" >&2
+  exit 1
+fi
+
+send_watchdog_ping() {
+  command -v systemd-notify >/dev/null 2>&1 && systemd-notify WATCHDOG=1 2>/dev/null || true
+}
+
+notify_ready() {
+  command -v systemd-notify >/dev/null 2>&1 && systemd-notify --ready 2>/dev/null || true
+}
+
+LAST_BUILD_AT="未実施"
+LAST_HEARTBEAT_LOG_AT=$(date +%s)
+
+# watchdog用のpingとは別に、もっと粗い間隔で「稼働中・直近ビルド時刻」を
+# journalctlへ出す。無変更が続く沈黙と、実は死んでいる沈黙を区別できるように
+# するための観測性向上（design_doc参照）。
+maybe_log_heartbeat() {
+  local now
+  now=$(date +%s)
+  if (( now - LAST_HEARTBEAT_LOG_AT >= HEARTBEAT_LOG_SEC )); then
+    echo "[$(date '+%F %T')] 稼働中(直近ビルド: ${LAST_BUILD_AT})"
+    LAST_HEARTBEAT_LOG_AT=$now
+  fi
+}
 
 notify_build_failure() {
   if [ -f "$SLACK_LIB" ]; then
@@ -34,6 +91,7 @@ notify_build_failure() {
 }
 
 run_build() {
+  LAST_BUILD_AT="$(date '+%F %T')"
   if ! python3 scripts/build_static_site.py --out "$OUT_DIR"; then
     echo "[$(date '+%F %T')] ビルド失敗" >&2
     notify_build_failure
@@ -41,26 +99,73 @@ run_build() {
   fi
 }
 
+# run_buildの所要時間はビルド対象データ量次第で伸びうるため、WatchdogSecを
+# ビルド時間に依存させない設計にする（design_doc参照）。ビルド中はバックグラウンド
+# で短間隔にWATCHDOG=1を送り続け、ビルドが終わったら止める。
+run_build_with_heartbeat() {
+  local hb_pid=""
+  if command -v systemd-notify >/dev/null 2>&1; then
+    (
+      while true; do
+        sleep "$BUILD_HEARTBEAT_SEC"
+        systemd-notify WATCHDOG=1 2>/dev/null || true
+      done
+    ) &
+    hb_pid=$!
+  fi
+
+  local result=0
+  run_build || result=$?
+
+  if [ -n "$hb_pid" ]; then
+    kill "$hb_pid" 2>/dev/null || true
+    wait "$hb_pid" 2>/dev/null || true
+  fi
+  return "$result"
+}
+
 echo "[$(date '+%F %T')] 監視開始: $SRC/**/*.html (除外: _site/, 出力先: $OUT_DIR)"
 
 # 起動直後は次のHTML更新イベントを待たず、まず一度ビルドしておく
 # （再起動直後に公開ディレクトリが空/古いままになるのを防ぐため）
-run_build || true
+run_build_with_heartbeat || true
+
+# 初回ビルドの成否によらず、ここでready通知する。プロセス自体は既に監視を
+# 開始できる状態にあり、Type=notifyのユニットはこれが来るまで「起動中」の
+# ままになってしまうため。
+notify_ready
 
 while true; do
-  # *.html関連のイベントが来るまで待つ（raw_data_*.mdの更新は無視）
+  # *.html関連のイベントが来るまで待つ（raw_data_*.mdの更新は無視）。
+  # タイムアウト付きにして、イベントが長時間来なくても定期的にwatchdog pingと
+  # ハートビートログを出せるようにしている（design_doc参照。タイムアウト無しだと
+  # 健全な待機中に一度もpingが送れず、watchdogに誤って再起動させられてしまう）。
   while true; do
-    if ! changed=$(inotifywait -r -e "$EVENTS" --exclude "$EXCLUDE" --format '%f' "$SRC" 2>/dev/null); then
+    if changed=$(inotifywait -r -t "$WATCHDOG_POLL_SEC" -e "$EVENTS" --exclude "$EXCLUDE" --format '%f' "$SRC" 2>/dev/null); then
+      send_watchdog_ping
+      maybe_log_heartbeat
+      [[ "$changed" == *.html ]] && break
+      continue
+    else
+      # $?はここで即座に取る(if/fiの間にelseを挟まないと、if文自体の終了コード
+      # (=0)を拾ってしまいinotifywaitの本当の終了コードが失われるため)。
+      status=$?
+      send_watchdog_ping
+      maybe_log_heartbeat
+      if [ "$status" -eq 2 ]; then
+        # -tのタイムアウト(イベント無し)。エラーではないので黙って次の周回へ。
+        continue
+      fi
       echo "[$(date '+%F %T')] inotifywait失敗、1秒後に再試行" >&2
       sleep 1
-      continue
     fi
-    [[ "$changed" == *.html ]] && break
   done
-  # 静穏化待ち: DEBOUNCE_SEC秒間イベントが来なくなるまでループ
+  # 静穏化待ち: DEBOUNCE_SEC秒間イベントが来なくなるまでループ。
+  # こちらも1周がDEBOUNCE_SEC(短い)ごとなので、そのついでにwatchdog pingを送る。
   while inotifywait -r -t "$DEBOUNCE_SEC" -e "$EVENTS" --exclude "$EXCLUDE" "$SRC" >/dev/null 2>&1; do
-    :
+    send_watchdog_ping
   done
+  send_watchdog_ping
   echo "[$(date '+%F %T')] 変更検知、ビルド実行"
-  run_build || true
+  run_build_with_heartbeat || true
 done
