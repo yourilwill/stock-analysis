@@ -1,3 +1,4 @@
 analysis_results/
 __pycache__/
 *.pyc
+.watch_and_build.lock

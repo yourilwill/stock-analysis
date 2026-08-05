@@ -36,13 +36,18 @@ DEBOUNCE_SEC=5
 EVENTS="close_write,create,delete,move"
 EXCLUDE='/_site/'
 SLACK_LIB="/usr/local/lib/hestia-health/slack_notify.sh"
-LOCK_FILE="/run/stock-analysis-site-watch.lock"
-WATCHDOG_POLL_SEC=30
+# /run/*.lock は root:root 755 で非rootユーザー(systemdユニットの User=)からは
+# 新規作成できずPermission Deniedになるため（2026-08-05ヘパイストスレビュー指摘）、
+# WorkingDirectory配下（このリポジトリのclone先、gitignore対象）に置く。
+LOCK_FILE="$(pwd)/.watch_and_build.lock"
+WATCHDOG_POLL_SEC=20
 BUILD_HEARTBEAT_SEC=15
 HEARTBEAT_LOG_SEC=3600
 
 # 多重起動防止: ロックを取得できなければ既に別インスタンスが動いているとみなし、
-# 何もせず即終了する（/runはtmpfsのため再起動時に自動でクリアされる）。
+# 何もせず即終了する（マシン再起動をまたいで残ってもflockは非ブロッキングな
+# 排他制御なので実害は無い。前回インスタンスがクラッシュして解放されないままでも
+# 次回起動時にはプロセス終了とともにOSがロックを自動解放している）。
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
   echo "[$(date '+%F %T')] 既に別インスタンスが起動中のため終了します(ロック: $LOCK_FILE)" >&2
