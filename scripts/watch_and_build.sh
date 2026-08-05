@@ -36,10 +36,15 @@ DEBOUNCE_SEC=5
 EVENTS="close_write,create,delete,move"
 EXCLUDE='/_site/'
 SLACK_LIB="/usr/local/lib/hestia-health/slack_notify.sh"
-# /run/*.lock は root:root 755 で非rootユーザー(systemdユニットの User=)からは
-# 新規作成できずPermission Deniedになるため（2026-08-05ヘパイストスレビュー指摘）、
-# WorkingDirectory配下（このリポジトリのclone先、gitignore対象）に置く。
-LOCK_FILE="$(pwd)/.watch_and_build.lock"
+# ロックファイルの置き場所。本来は/run配下（tmpfs、OSセッション中だけ意味を持つ
+# 一時状態を置くのが筋なので）が望ましいが、/run直下はroot:root 755で非rootユーザー
+# (systemdユニットのUser=)からは新規作成できずPermission Deniedになる
+# （2026-08-05ヘパイストスレビュー指摘）。systemdのRuntimeDirectory=を使えば
+# 書き込み可能な専用ディレクトリを$RUNTIME_DIRECTORYとして渡してもらえるため、
+# personal_memo側のunitファイルにRuntimeDirectory=stock-analysis-site-watchが
+# 設定されればそちらを使う。未設定（systemd管理外での手動実行時など）は
+# WorkingDirectory配下（このリポジトリのclone先、gitignore対象）にフォールバックする。
+LOCK_FILE="${RUNTIME_DIRECTORY:-$(pwd)}/.watch_and_build.lock"
 WATCHDOG_POLL_SEC=20
 BUILD_HEARTBEAT_SEC=15
 HEARTBEAT_LOG_SEC=3600
