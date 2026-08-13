@@ -10,6 +10,7 @@ irbank_utils.fetch_with_retry（ブラウザ相当のUA付き）で取得する�
     python3 tdnet_earnings_check.py 2026-07-30
 """
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
@@ -126,6 +127,7 @@ def is_reflected(html: str, date: str) -> bool:
 def main():
     parser = argparse.ArgumentParser(description="TDnetの決算短信発表銘柄と分析済み銘柄(analysis_results/)を突き合わせる")
     parser.add_argument("date", help="対象日（YYYYMMDD または YYYY-MM-DD）")
+    parser.add_argument("--json", action="store_true", help="人間向けテキストの代わりに構造化JSONを標準出力へ出す(他リポジトリからの呼び出し向け)")
     args = parser.parse_args()
 
     try:
@@ -154,8 +156,16 @@ def main():
                 "kubun": classify_kessan(title),
                 "analyzed_at": analyzed_at,
                 "reflected": is_reflected(html, date),
-                "html_path": html_path,
             })
+
+    if args.json:
+        print(json.dumps({
+            "date": date,
+            "total": total,
+            "kessan_count": len(kessan_rows),
+            "matches": matches,
+        }, ensure_ascii=False))
+        return
 
     y, m, d = date[:4], date[4:6], date[6:8]
     print(f"{y}年{int(m)}月{int(d)}日 TDnet開示件数: 全{total}件（うち決算短信 {len(kessan_rows)}件）")
