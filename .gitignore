@@ -1,4 +1,5 @@
 analysis_results/
+holdings_raw/
 __pycache__/
 *.pyc
 .watch_and_build.lock
