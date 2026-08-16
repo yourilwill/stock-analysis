@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""指定日にTDnetで決算短信を発表した銘柄と、analysis_results/内の分析済み銘柄を突き合わせるCLIツール。
+"""指定日にTDnetで決算短信を発表した銘柄と、analysis_results/内の分析済み銘柄・
+holdings_raw/内の保有銘柄を突き合わせるCLIツール。
 
 TDnet（適時開示情報閲覧サービス）は素のUser-Agentだと403を返すため、
 irbank_utils.fetch_with_retry（ブラウザ相当のUA付き）で取得する。
@@ -17,6 +18,7 @@ from pathlib import Path
 
 import requests
 
+from holdings_loader import load_held_stocks
 from irbank_utils import fetch_with_retry
 
 TDNET_LIST_URL = "https://www.release.tdnet.info/inbs/I_list_{page:03d}_{date}.html"
@@ -144,18 +146,28 @@ def main():
 
     kessan_rows = [r for r in rows if "決算短信" in r[3]]
     analyzed = load_analyzed_companies()
+    held = load_held_stocks()
 
-    matches = []
+    # 保有していてかつ分析済みの銘柄は、情報として上位互換のanalyzed_matches側にのみ
+    # 載せる(held_matches側からは除外、design_doc/stock-earnings-notify-holdings.md参照)。
+    analyzed_matches = []
+    held_matches = []
     for time_, code, name, title in kessan_rows:
         code4 = code[:4]
         if code4 in analyzed:
             a_name, analyzed_at, html_path, html = analyzed[code4]
-            matches.append({
+            analyzed_matches.append({
                 "code": code4,
                 "name": name,
                 "kubun": classify_kessan(title),
                 "analyzed_at": analyzed_at,
                 "reflected": is_reflected(html, date),
+            })
+        elif code4 in held:
+            held_matches.append({
+                "code": code4,
+                "name": name,
+                "kubun": classify_kessan(title),
             })
 
     if args.json:
@@ -163,20 +175,21 @@ def main():
             "date": date,
             "total": total,
             "kessan_count": len(kessan_rows),
-            "matches": matches,
+            "analyzed_matches": analyzed_matches,
+            "held_matches": held_matches,
         }, ensure_ascii=False))
         return
 
     y, m, d = date[:4], date[4:6], date[6:8]
     print(f"{y}年{int(m)}月{int(d)}日 TDnet開示件数: 全{total}件（うち決算短信 {len(kessan_rows)}件）")
     print()
-    if not matches:
+    if not analyzed_matches:
         print("分析済み銘柄との一致はありませんでした。")
         return
 
     print(f"{'コード':<6} {'銘柄名':<14} {'決算区分':<8} {'分析日':<14} {'反映状況'}")
     print("-" * 70)
-    for r in matches:
+    for r in analyzed_matches:
         reflected = "反映済み" if r["reflected"] else "未反映"
         print(f"{r['code']:<6} {r['name']:<14} {r['kubun']:<8} {r['analyzed_at']:<14} {reflected}")
 
