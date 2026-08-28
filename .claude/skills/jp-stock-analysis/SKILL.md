@@ -41,8 +41,8 @@ argument-hint: [会社名]
 ### 本決算（通期決算）の場合: フル再生成
 - 通常のステップ0〜13のフル分析フロー（下記のWave並列実行含む）を実施する。raw_data.mdは新しい日付で新規作成し、HTMLレポートも「レポート出力」節の手順でAgent委譲によりフル新規生成する。
 
-### 更新完了後のSlack通知（オプション、hestiaでの実行時のみ）
-ユーザーから「更新が終わったらSlackに通知して」等の依頼があった場合、更新分析（軽量フロー・フル再生成いずれも）が1件完了するごとに、Slackへ完了報告を投稿できる。
+### 更新完了後のSlack通知（hestiaでの実行時は既定で通知）
+hestia上でこのSkillを実行している場合、ユーザーからの依頼の有無にかかわらず、更新分析（軽量フロー・フル再生成いずれも）が1件完了するごとに、既定でSlackへ完了報告を投稿する。ユーザーから「通知しないで」等の依頼があった場合はそのセッション中投稿を控える。
 
 - **前提**: この通知手段は`hestia`（ラズパイ、Ansible管理下のホスト）にのみデプロイされている。`/usr/local/lib/hestia-health/slack_notify.sh`をsourceして`notify_slack`関数を呼び出す（sudo不要、実行ユーザーのままで動く）。他のマシン（自宅PC・athena等）ではこのライブラリ自体が存在しないため、この手順は使えない。実行前に`test -r /usr/local/lib/hestia-health/slack_notify.sh`等で存在確認し、無ければ素直に「hestia以外なのでSlack通知は行えない」旨をユーザーに伝える。
 - **投稿方法**: `source /usr/local/lib/hestia-health/slack_notify.sh` した上で `notify_slack "<本文>" "" "" "$SLACK_CHANNEL_ID"` を実行する（第4引数を省略するとデフォルトチャンネルへ投稿される。用途別に`$SLACK_DIGEST_CHANNEL_ID`・`$SLACK_ALERT_CHANNEL_ID`も利用可）。特に指定が無ければ`$SLACK_CHANNEL_ID`（notif-hestia）へ投稿する。
