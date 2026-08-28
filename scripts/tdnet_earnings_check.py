@@ -112,7 +112,7 @@ def load_analyzed_companies():
         html_files = sorted(d.glob("*.html"))
         if not html_files:
             continue
-        html_path = html_files[0]
+        html_path = html_files[-1]
         html = html_path.read_text(encoding="utf-8", errors="ignore")
         date_m = re.search(r"分析日[:：]\s*([0-9年/月日\-]+)", html)
         analyzed_at = date_m.group(1).strip() if date_m else "不明"
