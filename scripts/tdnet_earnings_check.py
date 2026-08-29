@@ -121,9 +121,19 @@ def load_analyzed_companies():
 
 
 def is_reflected(html: str, date: str) -> bool:
-    """レポートHTML内に該当日付（YYYY年M月D日）の追記があるか判定。"""
+    """レポートHTML内に該当日付の追記があるか判定。
+    「YYYY年M月D日」（漢字）表記に加え、「YYYY/M/D」「YYYY/MM/DD」（スラッシュ）
+    「YYYY-MM-DD」（ハイフン）表記でも追記されるケースがあるため、いずれかの
+    表記が見つかれば反映済みとみなす。
+    """
     y, m, d = int(date[:4]), int(date[4:6]), int(date[6:8])
-    return f"{y}年{m}月{d}日" in html
+    candidates = [
+        f"{y}年{m}月{d}日",
+        f"{y}/{m}/{d}",
+        f"{y}/{m:02d}/{d:02d}",
+        f"{y}-{m:02d}-{d:02d}",
+    ]
+    return any(c in html for c in candidates)
 
 
 def main():
