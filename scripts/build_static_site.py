@@ -16,6 +16,7 @@ from pathlib import Path
 from markdown_it import MarkdownIt
 
 DATE_RE = re.compile(r"_(\d{8})\.")
+LAST_UPDATED_RE = re.compile(r"最終更新日[:：]\s*(\d{4})-(\d{2})-(\d{2})")
 URL_RE = re.compile(r"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+")
 
 STYLE_CSS = """
@@ -105,6 +106,27 @@ def extract_date(filename: str) -> str:
     return m.group(1) if m else ""
 
 
+def extract_last_updated(path: Path) -> str:
+    """raw_data.md冒頭の「最終更新日」行から日付(YYYYMMDD)を取得する。無ければ空文字。
+
+    軽量フロー更新（既存raw_data.mdへのEdit追記）ではファイル名は変わらないため、
+    ファイル名の日付だけでは実際の分析日とズレる。SKILL.mdの規約で毎回更新される
+    この明示フィールドを優先的な情報源として使う。
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    m = LAST_UPDATED_RE.search(text)
+    return f"{m.group(1)}{m.group(2)}{m.group(3)}" if m else ""
+
+
+def md_date(path: Path) -> str:
+    """raw_data.mdの実際の分析日。最終更新日フィールドを優先し、無ければ
+    （フィールド未導入の旧ファイル向けに）ファイル名の日付にフォールバックする。"""
+    return extract_last_updated(path) or extract_date(path.name)
+
+
 def format_date(d: str) -> str:
     return f"{d[0:4]}/{d[4:6]}/{d[6:8]}" if len(d) == 8 else d
 
@@ -164,7 +186,7 @@ def build(src: Path, out: Path) -> int:
         out_company.mkdir(parents=True, exist_ok=True)
 
         reports = sorted(company_dir.glob("*.html"), key=lambda p: extract_date(p.name), reverse=True)
-        mds = sorted(company_dir.glob("*.md"), key=lambda p: extract_date(p.name), reverse=True)
+        mds = sorted(company_dir.glob("*.md"), key=md_date, reverse=True)
 
         report_links = []
         for f in reports:
@@ -194,7 +216,7 @@ def build(src: Path, out: Path) -> int:
                 page(f.name + "（生データ）", company_breadcrumb(company_dir.name, f.name), raw_body, depth=1),
                 encoding="utf-8",
             )
-            md_links.append((f.name, rendered_name, raw_name, format_date(extract_date(f.name))))
+            md_links.append((f.name, rendered_name, raw_name, format_date(md_date(f))))
 
         body = f"<h1>{html.escape(name)}（{html.escape(code)}）</h1>"
         body += '<h2>分析レポート</h2><ul class="file-list">'
@@ -214,7 +236,12 @@ def build(src: Path, out: Path) -> int:
             page(f"{name}（{code}）", "", body, depth=1), encoding="utf-8"
         )
 
-        latest_date = report_links[0][1] if report_links else (md_links[0][3] if md_links else "")
+        # 「最新レポート日」は会社ディレクトリ内の全ファイルから見た実際の最新分析日。
+        # HTMLはフル再生成時のみファイル名が更新されるが、raw_data.mdは軽量フロー更新でも
+        # 最終更新日フィールドが都度更新されるため、両者を突き合わせて最大値を取る。
+        raw_dates = [extract_date(f.name) for f in reports] + [md_date(f) for f in mds]
+        raw_dates = [d for d in raw_dates if d]
+        latest_date = format_date(max(raw_dates)) if raw_dates else ""
         companies.append((code, name, company_dir.name, latest_date))
 
     companies.sort(key=lambda c: c[0])
