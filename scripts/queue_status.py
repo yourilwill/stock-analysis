@@ -11,24 +11,21 @@ import json
 from pathlib import Path
 
 QUEUE_STATE_PATH = Path(__file__).resolve().parent.parent / "analysis_results" / "queue_state.json"
+LAST_RUN_PATH = Path(__file__).resolve().parent.parent / "analysis_results" / "last_run_date.json"
 
 
 def build_status() -> dict:
-    if not QUEUE_STATE_PATH.exists():
-        return {
-            "pending_count": 0,
-            "oldest_pending_detected_date": None,
-            "last_batch_date": None,
-            "last_batch_processed": [],
-        }
-
-    queue = json.loads(QUEUE_STATE_PATH.read_text(encoding="utf-8"))
+    queue = json.loads(QUEUE_STATE_PATH.read_text(encoding="utf-8")) if QUEUE_STATE_PATH.exists() else []
 
     pending = [item for item in queue if item["status"] == "pending"]
     oldest_pending_detected_date = min((item["detected_date"] for item in pending), default=None)
 
-    processed_dates = [item["processed_date"] for item in queue if item.get("processed_date")]
-    last_batch_date = max(processed_dates, default=None)
+    # last_batch_dateは「前回バッチが実際に起動した日」(run_queued_analysis.pyが
+    # 毎回記録する)を基準にする。processed_dateの最大値から逆算すると、空振りの夜が
+    # 続いた場合に何日も前の処理日がそのまま報告され続けてしまうため。
+    last_batch_date = None
+    if LAST_RUN_PATH.exists():
+        last_batch_date = json.loads(LAST_RUN_PATH.read_text(encoding="utf-8")).get("date")
 
     last_batch_processed = []
     if last_batch_date:
