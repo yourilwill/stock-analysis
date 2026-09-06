@@ -19,6 +19,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 QUEUE_STATE_PATH = REPO_ROOT / "analysis_results" / "queue_state.json"
+LAST_RUN_PATH = REPO_ROOT / "analysis_results" / "last_run_date.json"
 MAX_ATTEMPTS = 2
 MAX_SUMMARY_LEN = 150
 
@@ -38,6 +39,17 @@ def save_queue_state(queue: list) -> None:
     tmp_path = QUEUE_STATE_PATH.with_suffix(".json.tmp")
     tmp_path.write_text(json.dumps(queue, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp_path.replace(QUEUE_STATE_PATH)
+
+
+def save_last_run_date(today: str) -> None:
+    """バッチが今夜実際に起動したことを記録する(処理件数が0件でも呼ぶ)。
+    queue_status.pyはこの日付を基準に「前回バッチ」を報告するため、
+    空振りの夜も古い処理日が報告され続けることを防げる。
+    """
+    LAST_RUN_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = LAST_RUN_PATH.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps({"date": today}, ensure_ascii=False), encoding="utf-8")
+    tmp_path.replace(LAST_RUN_PATH)
 
 
 def reset_stuck_in_progress(queue: list) -> None:
@@ -141,6 +153,9 @@ def main():
     parser.add_argument("--timeout-sec", type=int, default=2700, help="1銘柄あたりのタイムアウト(既定: 45分)")
     args = parser.parse_args()
 
+    today = date.today().isoformat()
+    save_last_run_date(today)
+
     queue = load_queue_state()
     if not queue:
         print("キューは空です。処理対象はありません。")
@@ -156,7 +171,6 @@ def main():
 
     print(f"今夜の処理対象: {len(targets)}件 ({', '.join(t['code'] + '_' + t['name'] for t in targets)})")
 
-    today = date.today().isoformat()
     for target in targets:
         item = next(i for i in queue if i["code"] == target["code"])
         item["status"] = "in_progress"
