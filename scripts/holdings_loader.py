@@ -9,7 +9,9 @@ import re
 from pathlib import Path
 
 HOLDINGS_RAW_DIR = Path(__file__).resolve().parent.parent / "holdings_raw"
-_CODE_RE = re.compile(r"^\d{4}$")
+# 通常の4桁数字(7203)に加え、英字入りの新形式コード(545A・130A等)と
+# 優先株などの5桁コード(25935)も銘柄コードとして受け付ける。
+_CODE_RE = re.compile(r"^(?:\d{4,5}|\d{3}[A-Z])$")
 
 
 def load_held_stocks() -> dict:
@@ -34,7 +36,7 @@ def load_held_stocks() -> dict:
                 continue
             code, name = row[0].strip(), row[1].strip()
             # サマリー行・口座区分見出し行・合計行は銘柄コード列が
-            # 4桁数字にならないため、このバリデーションだけで自然に弾ける。
+            # 上記の形式にならないため、このバリデーションだけで自然に弾ける。
             if _CODE_RE.fullmatch(code):
                 held[code] = name
     return held
