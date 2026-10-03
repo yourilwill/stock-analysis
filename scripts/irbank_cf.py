@@ -65,23 +65,29 @@ def fetch_cf_summary(ecode: str):
         raise ValueError(f"CFテーブルが見つかりません: {url}")
     tbody_html = tbody.group(1)
 
-    # 年ラベル: rowspan="2" のTDから「2025年12月期」を抽出
-    year_labels = []
-    for ycell in re.findall(r"<td[^>]+rowspan[^>]+>(.*?)</td>", tbody_html, re.S):
-        clean = re.sub(r"<[^>]+>", "", ycell).strip()
-        m = re.search(r"(\d{4})年\D*?(\d{1,2})月期", clean)
-        if m:
-            year_labels.append(f"{m.group(1)}/{int(m.group(2)):02d}")
-
-    # 通期行: IRBANKのHTMLは <tr> 外にある裸のTD群で構成されるため、末尾の </tr> を区切りに使う
-    annual_rows = re.findall(
-        r'href="(S\w+)/cf">通期</a></td>(.*?)</tr>',
-        tbody_html, re.S
-    )
-
+    # 年度ブロック: rowspan付きTD（「2025年12月期」）を起点に、次の年度ラベルまでを1ブロックとする。
+    # ラベルと通期行を別々に集めて添字で対応付けると、通期に書類リンクが無い年度
+    # （上場前の過去分など）でラベルがずれるため、必ずブロック単位で対応付ける。
+    label_iter = list(re.finditer(r"<td[^>]+rowspan[^>]+>(.*?)</td>", tbody_html, re.S))
     rows = []
-    for i, (doc_id, cells_html) in enumerate(annual_rows):
-        label = year_labels[i] if i < len(year_labels) else f"期{i + 1}"
+    for i, lm in enumerate(label_iter):
+        clean = re.sub(r"<[^>]+>", "", lm.group(1)).strip()
+        m = re.search(r"(\d{4})年\D*?(\d{1,2})月期", clean)
+        if not m:
+            continue
+        label = f"{m.group(1)}/{int(m.group(2)):02d}"
+        block_end = label_iter[i + 1].start() if i + 1 < len(label_iter) else len(tbody_html)
+        block = tbody_html[lm.end():block_end]
+
+        # 通期行: IRBANKのHTMLは <tr> 外にある裸のTD群で構成されるため、末尾の </tr> を区切りに使う。
+        # 書類リンクが無い通期行もあり、その場合 doc_id は None（財務CF内訳は取得不可）。
+        am = re.search(
+            r'<td[^>]*>(?:<a[^>]*href="([^"/]+)/cf"[^>]*>)?通期(?:</a>)?</td>(.*?)</tr>',
+            block, re.S
+        )
+        if not am:
+            continue
+        doc_id, cells_html = am.group(1), am.group(2)
         vals_raw = re.findall(r"<td[^>]*>([^<]*)</td>", cells_html)
         nums = [parse_num(v) for v in vals_raw[:6]]
         while len(nums) < 6:
@@ -155,10 +161,10 @@ def to_million(raw: str, unit: str) -> str:
     return f"{val:,}百万円"
 
 
-def find_raw(fin_data: dict, keyword: str):
-    """fin_data のラベルに keyword を含む項目の生の値（文字列）を返す。無ければNone。"""
+def find_raw(fin_data: dict, *keywords: str, exclude: str = None):
+    """fin_data のラベルに keywords を全て含む（exclude は含まない）項目の生の値（文字列）を返す。無ければNone。"""
     for label, raw in fin_data.items():
-        if keyword in label:
+        if all(kw in label for kw in keywords) and not (exclude and exclude in label):
             return raw
     return None
 
@@ -191,31 +197,35 @@ def main():
             f"{fmt(r['financial_cf']):>8} {fmt(r['free_cf']):>9} {fmt(r['capex']):>9} {fmt(r['cash']):>8}"
         )
 
-    # 最新期の財務CF詳細（財務活動CF全行）
-    latest = rows[-1]
+    # 最新期の財務CF詳細（財務活動CF全行）。書類リンクのある最新の通期を使う
+    latest = next((r for r in reversed(rows) if r["doc_id"]), None)
     print()
-    try:
-        fin_data, unit, detail_url = fetch_cf_detail(ecode, latest["doc_id"])
-        print(f"【最新期({latest['label']})財務CF内訳・{unit}】")
-
-        # 財務活動CF区分のうち「合計」行と空値を除いた全項目を出力
-        skip = {"財務活動によるキャッシュ・フロー"}
-        for key, raw in fin_data.items():
-            if key in skip:
-                continue
-            val_str = to_million(raw, unit)
-            # 空・ゼロ・変換不能は「-」表示
-            if not raw or raw in ("0",):
-                val_str = "-"
-            print(f"  {key:<30}: {val_str}")
-
-        print(f"  {'財務CF合計':<30}: {fmt(latest['financial_cf'])}百万円")
+    if latest is None:
+        print("  財務CF内訳: 書類リンクのある通期が無いため取得できません")
         print(f"出典: {summary_url}")
-        print(f"      {detail_url}")
+    else:
+        try:
+            fin_data, unit, detail_url = fetch_cf_detail(ecode, latest["doc_id"])
+            print(f"【最新期({latest['label']})財務CF内訳・{unit}】")
 
-    except requests.RequestException as e:
-        print(f"  財務CF詳細の取得に失敗しました: {e}", file=sys.stderr)
-        print(f"出典: {summary_url}")
+            # 財務活動CF区分のうち「合計」行と空値を除いた全項目を出力
+            skip = {"財務活動によるキャッシュ・フロー"}
+            for key, raw in fin_data.items():
+                if key in skip:
+                    continue
+                val_str = to_million(raw, unit)
+                # 空・ゼロ・変換不能は「-」表示
+                if not raw or raw in ("0",):
+                    val_str = "-"
+                print(f"  {key:<30}: {val_str}")
+
+            print(f"  {'財務CF合計':<30}: {fmt(latest['financial_cf'])}百万円")
+            print(f"出典: {summary_url}")
+            print(f"      {detail_url}")
+
+        except requests.RequestException as e:
+            print(f"  財務CF詳細の取得に失敗しました: {e}", file=sys.stderr)
+            print(f"出典: {summary_url}")
 
     # --all: 全年度分の自己株式取得額・配当金支払額の推移を取得
     if args.all_years:
@@ -224,13 +234,17 @@ def main():
         print(f"{'年度':<10} {'自己株式取得額':>14} {'配当金支払額':>12}")
         print("-" * 40)
         for r in rows:
+            if not r["doc_id"]:
+                print(f"{r['label']:<10} {'-':>14} {'-':>12}  (書類リンク無し)")
+                continue
             try:
                 r_fin_data, r_unit, _ = fetch_cf_detail(ecode, r["doc_id"])
             except requests.RequestException as e:
                 print(f"{r['label']:<10} {'取得失敗':>14} ({e})", file=sys.stderr)
                 continue
             treasury_raw = find_raw(r_fin_data, "自己株式の取得")
-            dividend_raw = find_raw(r_fin_data, "配当金の支払")
+            # 「配当金の支払額」「配当金支払による支出」等の表記揺れを吸収する
+            dividend_raw = find_raw(r_fin_data, "配当金", "支払", exclude="非支配")
             treasury_str = to_million(treasury_raw, r_unit) if treasury_raw not in (None, "", "0") else ("-" if treasury_raw is None else "0百万円")
             dividend_str = to_million(dividend_raw, r_unit) if dividend_raw not in (None, "", "0") else ("-" if dividend_raw is None else "0百万円")
             print(f"{r['label']:<10} {treasury_str:>14} {dividend_str:>12}")
