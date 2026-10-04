@@ -22,22 +22,43 @@ def strip_tags(s: str) -> str:
     return re.sub(r"<[^>]+>", "", s).strip()
 
 
+UNIT_TO_MILLION = {"兆": 1_000_000, "億": 100, "千万": 10, "百万": 1}
+
+# 売上・利益の科目名は業種や会計基準で異なる（不動産=営業収益、IFRS=売上収益 等）。先に見つかったものを使う。
+REVENUE_SUBJECTS = ("売上高", "営業収益", "売上収益", "営業収入", "経常収益", "収益")
+PROFIT_SUBJECTS = ("営業利益", "セグメント利益", "事業利益", "経常利益", "当期利益", "当期純利益")
+
+# IRBANKのセグメント列には調整額（全社費用・セグメント間消去）が並ぶことがあるため、合計・構成比から除外する
+ADJUSTMENT_PATTERN = re.compile(r"調整|消去|全社")
+
+
 def parse_oku(cell_html: str):
-    """「54.9億」→5490、「489百万」→489、「11.6億」→1160 に変換（百万円単位）。"""
+    """「54.9億」→5490、「489百万」→489、「-16.6億」→-1660 に変換（百万円単位）。"""
     text = cell_html.split("<br>")[0]
-    text = strip_tags(text).strip()
+    text = strip_tags(text).strip().replace(",", "")
     if not text or text == "-":
         return None
-    m = re.match(r"([\d.]+)億", text)
+    m = re.match(r"(-?[\d.]+)(兆|億|千万|百万)", text)
     if m:
-        return round(float(m.group(1)) * 100)
-    m = re.match(r"([\d.]+)百万", text)
-    if m:
-        return round(float(m.group(1)))
-    m = re.match(r"([\d.]+)千万", text)
-    if m:
-        return round(float(m.group(1)) * 10)
+        value = float(m.group(1)) * UNIT_TO_MILLION[m.group(2)]
+        # 1百万円未満は整数丸めで0（符号も消える）になるため小数1桁を残す
+        return round(value) if abs(value) >= 1 else round(value, 1)
     return None
+
+
+def pick_subject(data: dict, candidates: tuple[str, ...], year: str) -> str | None:
+    """候補のうち指定年度に値がある科目を優先し、無ければ存在する最初の科目を返す。
+
+    科目名は年度途中で変わることがある（例: 営業利益→セグメント利益）ため、年度ごとに選ぶ。
+    """
+    present = [s for s in candidates if s in data]
+    with_value = [s for s in present if any(v is not None for v in data[s].get(year, {}).values())]
+    return (with_value or present or [None])[0]
+
+
+def subject_row(data: dict, candidates: tuple[str, ...], year: str) -> tuple[str | None, dict]:
+    subject = pick_subject(data, candidates, year)
+    return subject, data.get(subject, {}).get(year, {}) if subject else {}
 
 
 def resolve_ecode(code: str) -> str:
@@ -153,53 +174,62 @@ def main():
     print(f"{company}({args.code}) セグメント別財務データ（百万円）")
     print(f"出典: {url}")
 
-    subjects = [s for s in ("売上高", "営業利益") if s in data]
-    if not subjects:
-        subjects = list(data.keys())
+    latest_year = display_years[-1]
+    rev_subject, rev_data = subject_row(data, REVENUE_SUBJECTS, latest_year)
+    op_subject, op_data = subject_row(data, PROFIT_SUBJECTS, latest_year)
+    if not rev_subject or not op_subject:
+        print(f"警告: 売上/利益の科目が特定できません（取得できた科目: {', '.join(data.keys())}）", file=sys.stderr)
+    rev_label = rev_subject or "売上高"
+    op_label = op_subject or "営業利益"
 
     # 最新期のサマリーテーブル
-    latest_year = display_years[-1]
-    rev_data = data.get("売上高", {}).get(latest_year, {})
-    op_data = data.get("営業利益", {}).get(latest_year, {})
 
-    total_rev = sum(v for v in rev_data.values() if v is not None)
-    total_op = sum(v for v in op_data.values() if v is not None)
+    business_segments = [s for s in segments if not ADJUSTMENT_PATTERN.search(s)]
+    adjustment_segments = [s for s in segments if ADJUSTMENT_PATTERN.search(s)]
+    rev_values = [rev_data.get(s) for s in business_segments if rev_data.get(s) is not None]
+    op_values = [op_data.get(s) for s in business_segments if op_data.get(s) is not None]
+
+    total_rev = sum(rev_values) if rev_values else None
+    total_op = sum(op_values) if op_values else None
+    # 赤字セグメントがあると合計比の構成比が100%を超えたり負になるため、利益構成比は黒字セグメント合計を分母にする
+    total_op_positive = sum(v for v in op_values if v > 0)
+    has_loss = any(v < 0 for v in op_values)
 
     print()
     print(f"【{latest_year}（最新期）セグメント別】")
     seg_width = max(len(s) for s in segments) + 2
-    header = f"{'セグメント':<{seg_width}} {'売上高':>8} {'売上構成比':>10} {'営業利益':>9} {'利益構成比':>10} {'利益率':>7}"
+    header = f"{'セグメント':<{seg_width}} {rev_label:>8} {'売上構成比':>10} {op_label:>9} {'利益構成比':>10} {'利益率':>7}"
     print(header)
     print("-" * len(header))
-    for seg in segments:
+    for seg in business_segments:
         rev = rev_data.get(seg)
         op = op_data.get(seg)
         rate = f"{op / rev * 100:.1f}%" if rev and op is not None else "-"
-        print(f"{seg:<{seg_width}} {fmt(rev)} {pct(rev, total_rev)} {fmt(op, 9)} {pct(op, total_op)} {rate:>7}")
+        print(f"{seg:<{seg_width}} {fmt(rev)} {pct(rev, total_rev)} {fmt(op, 9)} {'赤字'.rjust(8) if op is not None and op < 0 else pct(op, total_op_positive)} {rate:>7}")
     print("-" * len(header))
-    print(f"{'セグメント計':<{seg_width}} {fmt(total_rev)} {'100.0%':>10} {fmt(total_op, 9)} {'100.0%':>10} {f'{total_op / total_rev * 100:.1f}%' if total_rev else '-':>7}")
+    print(f"{'セグメント計':<{seg_width}} {fmt(total_rev)} {'100.0%' if total_rev else '-':>10} {fmt(total_op, 9)} {'100.0%' if total_op_positive else '-':>10} {f'{total_op / total_rev * 100:.1f}%' if total_rev and total_op is not None else '-':>7}")
+    for seg in adjustment_segments:
+        print(f"{seg:<{seg_width}} {fmt(rev_data.get(seg))} {'':>10} {fmt(op_data.get(seg), 9)}")
+    if has_loss:
+        print("※利益構成比は黒字セグメントの合計を分母に算出（赤字セグメントは除外）。セグメント計の利益は赤字を含む合算。")
+    if adjustment_segments:
+        print(f"※「{'」「'.join(adjustment_segments)}」列は調整額のためセグメント計・構成比から除外。")
+    print("※「その他」等の列が実は調整額の場合もあるため、セグメント計＋調整額を決算短信の連結実績と照合すること。")
 
-    # 全期間の時系列
+    # 全期間の時系列（科目名が年度で変わる場合は、その年度に値がある科目を使い末尾に注記する）
     if len(display_years) > 1:
-        print()
-        print("【売上高推移】")
         seg_cols = "  ".join(f"{s:>{max(8, len(s))}}" for s in segments)
-        print(f"{'年度':<10}  {seg_cols}")
-        print("-" * (10 + 2 + sum(max(8, len(s)) + 2 for s in segments)))
-        for year in display_years:
-            yr_data = data.get("売上高", {}).get(year, {})
-            cols = "  ".join(fmt(yr_data.get(s), max(8, len(s))) for s in segments)
-            print(f"{year:<10}  {cols}")
-
-        print()
-        print("【営業利益推移】")
-        print(f"{'年度':<10}  {seg_cols}")
-        print("-" * (10 + 2 + sum(max(8, len(s)) + 2 for s in segments)))
-        for year in display_years:
-            yr_data = data.get("営業利益", {}).get(year, {})
-            cols = "  ".join(fmt(yr_data.get(s), max(8, len(s))) for s in segments)
-            print(f"{year:<10}  {cols}")
-
+        rule = "-" * (10 + 2 + sum(max(8, len(s)) + 2 for s in segments))
+        for candidates, label in ((REVENUE_SUBJECTS, rev_label), (PROFIT_SUBJECTS, op_label)):
+            print()
+            print(f"【{label}推移】")
+            print(f"{'年度':<10}  {seg_cols}")
+            print(rule)
+            for year in display_years:
+                subject, yr_data = subject_row(data, candidates, year)
+                cols = "  ".join(fmt(yr_data.get(s), max(8, len(s))) for s in segments)
+                note = f"  ({subject})" if subject and subject != label and yr_data else ""
+                print(f"{year:<10}  {cols}{note}")
 
 if __name__ == "__main__":
     main()
