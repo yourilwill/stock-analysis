@@ -60,6 +60,29 @@ def reset_stuck_in_progress(queue: list) -> None:
             item["status"] = "pending"
 
 
+def has_raw_data(code: str) -> bool:
+    """<code>_<name>/ディレクトリにraw_data_*.mdが1つでもあるか。"""
+    return any(
+        any(company_dir.glob("raw_data_*.md"))
+        for company_dir in (REPO_ROOT / "analysis_results").glob(f"{code}_*")
+    )
+
+
+def skip_items_without_raw_data(queue: list, today: str) -> None:
+    """四半期決算の軽量フローは既存raw_data.mdへの追記が前提のため、raw_data.mdが無い銘柄は
+    `claude -p`を呼んでも確認質問を返して終わるだけになる(2026-10-28/29の横河ブＨＤで発生)。
+    当夜の処理枠を消費させず、理由付きで即座にfailed_needs_attentionへ回す。
+    本決算はフル再生成でraw_data.mdを新規作成するため対象外。
+    """
+    for item in queue:
+        if item["status"] != "pending" or item["kubun"] == "本決算" or has_raw_data(item["code"]):
+            continue
+        item["status"] = "failed_needs_attention"
+        item["processed_date"] = today
+        item["summary"] = "既存のraw_data.mdが無いため軽量フローで更新できません。手動でフル分析が必要です。"
+        print(f"raw_data.md不在のためスキップ: {item['code']} {item['name']}", file=sys.stderr)
+
+
 def select_targets(queue: list) -> list:
     """FIFO(detected_date昇順)で先頭から、決算区分構成による動的上限ルールに従い今回の処理対象を選ぶ。"""
     pending = sorted(
@@ -101,19 +124,20 @@ def extract_step13_summary(text: str, max_len: int = MAX_SUMMARY_LEN) -> str:
 
 def find_updated_raw_data(code: str, started_at: float) -> Path | None:
     """<code>_<name>/ディレクトリ内で、分析開始後に更新されたraw_data_*.mdを探す。
-    見つからなければファイル名の日付が最も新しいものにフォールバックする。
+    更新されたものが無ければNoneを返す。以前は古いraw_data_*.mdにフォールバックしていたが、
+    `claude -p`が確認質問を返して何も更新せずexit 0で終わった場合も成功扱いになり、
+    前回の総合判定がそのまま報告されてしまうため廃止した
+    (軽量フローでも冒頭の「最終更新日」行を必ず書き換えるため、正常終了ならmtimeは必ず新しくなる)。
     """
-    matches = list((REPO_ROOT / "analysis_results").glob(f"{code}_*"))
-    if not matches:
-        return None
-    company_dir = matches[0]
-    raw_data_files = sorted(company_dir.glob("raw_data_*.md"))
-    if not raw_data_files:
-        return None
+    raw_data_files = [
+        f
+        for company_dir in (REPO_ROOT / "analysis_results").glob(f"{code}_*")
+        for f in company_dir.glob("raw_data_*.md")
+    ]
     fresh = [f for f in raw_data_files if f.stat().st_mtime >= started_at]
-    if fresh:
-        return max(fresh, key=lambda f: f.stat().st_mtime)
-    return raw_data_files[-1]
+    if not fresh:
+        return None
+    return max(fresh, key=lambda f: f.stat().st_mtime)
 
 
 def run_analysis(item: dict, claude_bin: str, model: str, timeout_sec: int) -> tuple[bool, str]:
@@ -140,7 +164,9 @@ def run_analysis(item: dict, claude_bin: str, model: str, timeout_sec: int) -> t
 
     raw_data_path = find_updated_raw_data(item["code"], started_at)
     if raw_data_path is None:
-        return False, "分析後にraw_data.mdが見つかりませんでした"
+        # 確認質問を返して止まったケースが大半のため、claudeの最終出力の末尾を理由に添える
+        stdout_tail = " ".join(result.stdout.split())[-300:]
+        return False, f"claude -pがraw_data.mdを更新せずに終了しました: {stdout_tail}"
 
     summary = extract_step13_summary(raw_data_path.read_text(encoding="utf-8"))
     return True, summary
@@ -162,6 +188,7 @@ def main():
         return
 
     reset_stuck_in_progress(queue)
+    skip_items_without_raw_data(queue, today)
     save_queue_state(queue)
 
     targets = select_targets(queue)
@@ -190,6 +217,7 @@ def main():
             if item["attempts"] >= MAX_ATTEMPTS:
                 item["status"] = "failed_needs_attention"
                 item["processed_date"] = today
+                item["summary"] = detail
             else:
                 item["status"] = "pending"
         save_queue_state(queue)
