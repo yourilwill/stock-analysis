@@ -30,7 +30,7 @@ import requests
 
 from holdings_loader import HOLDINGS_RAW_DIR, load_held_positions
 from irbank_utils import UA
-from yield_targets import load_targets
+from yield_targets import analyzed_stocks, load_targets
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STATE_PATH = REPO_ROOT / "market_watch" / "alert_state.json"
@@ -153,7 +153,11 @@ def collect(dry_run: bool) -> dict:
 
     stocks, failed_codes, skipped = [], set(), []
     consecutive_blocks = 0
-    candidates = [(c, t) for c, t in targets.items() if t.get("target_yield") is not None]
+    # yield_targets.json には保有をやめた(未分析の)銘柄のエントリも残るため、
+    # 今の保有銘柄＋分析済み銘柄に絞る(売却済みの銘柄を「新規候補」として出さない)。
+    scope = set(positions) | set(analyzed_stocks())
+    candidates = [(c, t) for c, t in targets.items()
+                  if c in scope and t.get("target_yield") is not None]
     for i, (code, t) in enumerate(candidates):
         if i and i % BATCH_SIZE == 0:
             _progress(f"{i}/{len(candidates)}件取得、ブロック回避のため{BATCH_PAUSE_SEC}秒休憩")
