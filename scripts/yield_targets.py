@@ -12,11 +12,21 @@ scripts/market_digest.py がこれを読んで当日の利回りと比較する�
   irbank_dividend.get_all_dividends() で算出する。株式分割で配当が未調整の年は
   利回りが歪むため、5年の中に外れ値があれば note に「要確認」を付ける。
 - manual:   手で書き換えた値。build で上書きしない。
+- excluded: 押し目判定から外した銘柄(優先株など、Yahoo!に会社予想配当が出ず判定できないもの)。
+  build で上書きせず、--report-json の要対応にも出さない。解除は yield_targets.json から
+  該当エントリを消して build --only <コード>。
+- none:     目安値なし。理由を none_reason に入れる。
+    no_dividend:  配当実績が0%(無配続き)。押し目判定の対象外で、対応は不要。
+    no_history:   IRBANKに配当利回りの実績が1年も無い(新規上場など)。手動設定が必要。
+    fetch_failed: IRBANKの取得・解析に失敗した。手動設定か、原因の確認が必要。
 
 使い方:
     python3 scripts/yield_targets.py build             # 全銘柄を(再)構築(manualは維持)
     python3 scripts/yield_targets.py build --only 6328 # 指定銘柄だけ更新
+    python3 scripts/yield_targets.py build --missing   # yield_targets.jsonに無い銘柄だけ作る
+    python3 scripts/yield_targets.py build --missing --report-json /tmp/report.json
     python3 scripts/yield_targets.py set 6328 3.08 --note "2021年の分割混在値を除外"
+    python3 scripts/yield_targets.py exclude 25935 --note "優先株。Yahoo!に予想配当が出ない"
     python3 scripts/yield_targets.py show
 """
 import argparse
@@ -109,19 +119,28 @@ def avg_from_irbank(code: str):
     return avg, years, note
 
 
-def build(only=None) -> None:
+# 目安値を作れず、ユーザーの対応が要る none_reason
+UNRESOLVED_REASONS = ("no_history", "fetch_failed")
+
+
+def build(only=None, missing=False, report_path=None) -> None:
     targets = load_targets()
     held = load_held_stocks()
     analyzed = analyzed_stocks()
     codes = sorted(set(held) | set(analyzed))
     if only:
         codes = [c for c in codes if c in only] + [c for c in only if c not in codes]
+    if missing:
+        # 月1回の全件更新を待たずに、新しく買った・分析した銘柄の目安値を作る用途。
+        # 対象が0件ならIRBANKにはアクセスしない。
+        codes = [c for c in codes if c not in targets]
+    processed = []
 
     today = date.today().isoformat()
     for i, code in enumerate(codes):
         prev = targets.get(code, {})
-        if prev.get("source") == "manual":
-            print(f"{code}: manual のため維持 ({prev.get('target_yield')}%)")
+        if prev.get("source") in ("manual", "excluded"):
+            print(f"{code}: {prev['source']} のため維持 ({prev.get('target_yield')}%)")
             continue
         name = analyzed[code][0] if code in analyzed else held.get(code, prev.get("name", ""))
         raw_path = analyzed[code][1] if code in analyzed else None
@@ -129,11 +148,14 @@ def build(only=None) -> None:
 
         if i > 0:
             time.sleep(IRBANK_INTERVAL_SEC)
+        fetch_failed = False
         try:
             irbank_avg, years, note = avg_from_irbank(code)
         except (ValueError, requests.RequestException) as e:
             irbank_avg, years, note = None, [], f"IRBANK取得失敗: {e}"
+            fetch_failed = True
 
+        none_reason = None
         if raw_avg is not None:
             source, target = "raw_data", raw_avg
             if irbank_avg is not None and abs(raw_avg - irbank_avg) >= 0.3:
@@ -144,12 +166,22 @@ def build(only=None) -> None:
             source, target = "irbank", round(irbank_avg, 2)
         else:
             source, target = "none", None
-            note = note or "配当実績なし(無配銘柄として対象外)"
+            # note は avg_from_irbank() の「要確認」等が残っている場合があるため、
+            # 対応要否の判定には note の文言ではなく none_reason を使うこと。
+            if fetch_failed:
+                none_reason = "fetch_failed"
+            elif irbank_avg is None:
+                none_reason = "no_history"
+                note = "IRBANKに配当利回りの実績が無い(新規上場など)。手動設定が必要"
+            else:
+                none_reason = "no_dividend"
+                note = "配当実績なし(無配銘柄として対象外)"
 
         targets[code] = {
             "name": name,
             "target_yield": target,
             "source": source,
+            "none_reason": none_reason,
             "raw_data_avg": raw_avg,
             "irbank_avg": round(irbank_avg, 2) if irbank_avg is not None else None,
             "irbank_years": years,
@@ -159,16 +191,50 @@ def build(only=None) -> None:
         }
         print(f"{code} {name}: {target}% ({source}){' ※' + note if note else ''}", flush=True)
         save_targets(targets)  # 途中で落ちても進捗を残す
+        processed.append(code)
+
+    if report_path:
+        write_report(report_path, targets, processed)
+
+
+def write_report(path: str, targets: dict, processed: list) -> None:
+    """今回の build で処理した銘柄のうち、目安値を作れず対応が要るものをJSONで書き出す。
+
+    yield_targets.json には保有をやめた銘柄の古いエントリも残るため、
+    通知の判定には json 全体ではなく、このレポート(今回の実行分)を使う。
+    """
+    unresolved = [
+        {"code": c, "name": targets[c].get("name", ""), "none_reason": targets[c]["none_reason"],
+         "note": targets[c].get("note")}
+        for c in processed
+        if targets[c].get("source") == "none" and targets[c].get("none_reason") in UNRESOLVED_REASONS
+    ]
+    report = {
+        "date": date.today().isoformat(),
+        "processed_count": len(processed),
+        "unresolved": unresolved,
+    }
+    Path(path).write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def set_manual(code: str, value: float, note) -> None:
     targets = load_targets()
     entry = targets.get(code, {"name": ""})
-    entry.update({"target_yield": value, "source": "manual", "note": note,
+    entry.update({"target_yield": value, "source": "manual", "none_reason": None, "note": note,
                   "updated": date.today().isoformat()})
     targets[code] = entry
     save_targets(targets)
     print(f"{code} {entry.get('name', '')}: {value}% (manual)")
+
+
+def exclude(code: str, note) -> None:
+    targets = load_targets()
+    entry = targets.get(code, {"name": ""})
+    entry.update({"target_yield": None, "source": "excluded", "none_reason": None, "note": note,
+                  "updated": date.today().isoformat()})
+    targets[code] = entry
+    save_targets(targets)
+    print(f"{code} {entry.get('name', '')}: excluded")
 
 
 def show() -> None:
@@ -181,18 +247,28 @@ def main():
     parser = argparse.ArgumentParser(description="目安の配当利回り(過去5年平均)を管理する")
     sub = parser.add_subparsers(dest="cmd", required=True)
     p_build = sub.add_parser("build", help="分析済み・保有銘柄の目安利回りを(再)構築する")
-    p_build.add_argument("--only", nargs="+", help="指定した銘柄コードだけ更新する")
+    target_group = p_build.add_mutually_exclusive_group()
+    target_group.add_argument("--only", nargs="+", help="指定した銘柄コードだけ更新する")
+    target_group.add_argument("--missing", action="store_true",
+                              help="yield_targets.jsonにまだ無い保有・分析済み銘柄だけ作る")
+    p_build.add_argument("--report-json", metavar="PATH",
+                         help="今回処理した銘柄のうち、目安値を作れず対応が要るものをJSONで書き出す")
     p_set = sub.add_parser("set", help="目安利回りを手動で設定する(以後buildで上書きしない)")
     p_set.add_argument("code")
     p_set.add_argument("value", type=float)
     p_set.add_argument("--note")
+    p_exclude = sub.add_parser("exclude", help="押し目判定から外す(以後buildで上書きしない)")
+    p_exclude.add_argument("code")
+    p_exclude.add_argument("--note")
     sub.add_parser("show", help="一覧を表示する")
     args = parser.parse_args()
 
     if args.cmd == "build":
-        build(set(args.only) if args.only else None)
+        build(set(args.only) if args.only else None, args.missing, args.report_json)
     elif args.cmd == "set":
         set_manual(args.code, args.value, args.note)
+    elif args.cmd == "exclude":
+        exclude(args.code, args.note)
     else:
         show()
 
