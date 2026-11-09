@@ -42,6 +42,49 @@ def load_held_stocks() -> dict:
     return held
 
 
+def _to_float(s: str):
+    s = s.replace(",", "").strip()
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def load_held_positions() -> dict:
+    """{証券コード: {"name", "quantity", "avg_cost"}} を返す(簿価利回りの計算用)。
+
+    「銘柄コード」で始まる見出し行から列位置を決める。同じ銘柄が複数の口座区分に
+    あれば数量を合算し、平均取得価額は数量の加重平均にする。
+    """
+    if not HOLDINGS_RAW_DIR.is_dir():
+        return {}
+    csv_files = sorted(HOLDINGS_RAW_DIR.glob("*.csv"))
+    if not csv_files:
+        return {}
+
+    positions = {}
+    cols = None
+    with csv_files[-1].open(encoding="cp932", newline="") as f:
+        for row in csv.reader(f):
+            if row and row[0].strip() == "銘柄コード":
+                cols = {h.strip(): i for i, h in enumerate(row)}
+                continue
+            if cols is None or len(row) < 2 or not _CODE_RE.fullmatch(row[0].strip()):
+                continue
+            qty_col = next((i for h, i in cols.items() if h.startswith("保有数量")), None)
+            cost_col = next((i for h, i in cols.items() if h.startswith("平均取得価額")), None)
+            qty = _to_float(row[qty_col]) if qty_col is not None else None
+            cost = _to_float(row[cost_col]) if cost_col is not None else None
+            if not qty or cost is None:
+                continue
+            code = row[0].strip()
+            p = positions.setdefault(code, {"name": row[1].strip(), "quantity": 0.0, "avg_cost": 0.0})
+            total_cost = p["quantity"] * p["avg_cost"] + qty * cost
+            p["quantity"] += qty
+            p["avg_cost"] = total_cost / p["quantity"]
+    return positions
+
+
 if __name__ == "__main__":
     import json
     print(json.dumps(load_held_stocks(), ensure_ascii=False, indent=2))
