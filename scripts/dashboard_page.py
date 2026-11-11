@@ -15,9 +15,12 @@ DASHBOARD_CSS = """
 .summary-card .label { color: var(--muted); font-size: 0.8em; }
 .summary-card .value { font-size: 1.3em; font-weight: bold; }
 .summary-card .sub { color: var(--muted); font-size: 0.8em; }
-.table-wrap { overflow-x: auto; }
-#quote-table { font-size: 0.86em; white-space: nowrap; }
-#quote-table th { cursor: pointer; user-select: none; }
+/* 見出し行を縦スクロールでも見えるように固定する。position: stickyは一番近いスクロール
+   コンテナ(横スクロール用の.table-wrap)を基準にするため、.table-wrap自体に高さの上限を
+   付けて縦もこの中でスクロールさせる(ページ側のスクロールでは見出しが固定されない)。 */
+.table-wrap { overflow: auto; max-height: calc(100vh - 40px); border: 1px solid var(--border); }
+#quote-table { font-size: 0.86em; white-space: nowrap; margin: 0; }
+#quote-table th { cursor: pointer; user-select: none; position: sticky; top: 0; z-index: 1; }
 #quote-table th:hover { color: var(--pink); }
 #quote-table th.sort-asc::after { content: " \\25B2"; }
 #quote-table th.sort-desc::after { content: " \\25BC"; }
