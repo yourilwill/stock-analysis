@@ -144,9 +144,9 @@ def _summary(stocks: list) -> str:
 
     cards = [
         card("評価額(保有)", f"{market_value:,.0f}円", f"{len(held)}銘柄"),
+        card("評価損益", _fmt_signed(pl, 0, "円"), _fmt_signed(pl / cost * 100 if cost else None)),
         card("取得額(保有)", f"{cost:,.0f}円",
              f"株価未取得の{unpriced}銘柄を除く" if unpriced else "平均取得単価×株数"),
-        card("評価損益", _fmt_signed(pl, 0, "円"), _fmt_signed(pl / cost * 100 if cost else None)),
         card("年間配当見込み", f"{annual_div:,.0f}円", "会社予想配当×株数(税引前)"),
         card("配当利回り(時価/簿価)",
              f"{annual_div / market_value * 100:.2f}%" if market_value else "—",
