@@ -129,7 +129,9 @@ def _cell(display: str, sort_value=None) -> str:
 def _summary(stocks: list) -> str:
     held = [s for s in stocks if s.get("held")]
     market_value = sum(s.get("market_value") or 0 for s in held)
+    # 取得額・評価損益は、評価額と比べられるよう株価を取得できた保有銘柄だけで集計する
     cost = sum((s.get("quantity") or 0) * (s.get("avg_cost") or 0) for s in held if s.get("market_value") is not None)
+    unpriced = sum(1 for s in held if s.get("market_value") is None)
     pl = market_value - cost
     annual_div = sum(s.get("annual_dividend") or 0 for s in held)
     reached = [s for s in stocks if s.get("reached")]
@@ -142,6 +144,8 @@ def _summary(stocks: list) -> str:
 
     cards = [
         card("評価額(保有)", f"{market_value:,.0f}円", f"{len(held)}銘柄"),
+        card("取得額(保有)", f"{cost:,.0f}円",
+             f"株価未取得の{unpriced}銘柄を除く" if unpriced else "平均取得単価×株数"),
         card("評価損益", _fmt_signed(pl, 0, "円"), _fmt_signed(pl / cost * 100 if cost else None)),
         card("年間配当見込み", f"{annual_div:,.0f}円", "会社予想配当×株数(税引前)"),
         card("配当利回り(時価/簿価)",
