@@ -23,7 +23,7 @@ import json
 import re
 import sys
 import time
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import requests
@@ -34,6 +34,11 @@ from yield_targets import analyzed_stocks, load_targets
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STATE_PATH = REPO_ROOT / "market_watch" / "alert_state.json"
+# 全銘柄の取得結果(日付ごと)。build_static_site.py がダッシュボードページの生成に使う。
+QUOTES_DIR = REPO_ROOT / "market_watch" / "quotes"
+# 売買が成立しなかった日は株価が「---」になる。前日終値の日付がこの日数以内なら
+# 前日終値で判定し、それより古ければ売買停止・上場廃止とみなす。
+NO_TRADE_MAX_DAYS = 10
 QUOTE_URL = "https://finance.yahoo.co.jp/quote/{symbol}"
 # 1.5秒間隔では約90ページ目からブロックされた(2026-11-07)。終値ベースの判定で急ぐ必要は
 # ないため、1回の実行に15分程度かかってもよい前提で間隔を大きく取る。
@@ -64,8 +69,9 @@ _PRICE_RE = re.compile(
     r"ポートフォリオに追加 (?:\S+ ){0,3}?([\d,]+(?:\.\d+)?) 前日比 ([+\-]?[\d,]+(?:\.\d+)?) "
     r"\( ([+\-]?[\d.]+) % \) (?:\S+ ){1,3}?(\d{1,2}/\d{1,2}|\d{1,2}:\d{2})(?: |$)"
 )
-# 売買停止・上場廃止予定などで株価が「---」表示になっている
+# その日に売買が成立しなかった・売買停止・上場廃止予定などで株価が「---」表示になっている
 _NO_PRICE_RE = re.compile(r"ポートフォリオに追加 (?:\S+ ){0,3}?--- 前日比 ---")
+_PREV_CLOSE_RE = re.compile(r"前日終値 用語 ([\d,]+(?:\.\d+)?) \( (\d{1,2})/(\d{1,2}) \)")
 _DPS_RE = re.compile(r"1株配当 （会社予想） 用語 ([\d,.]+|---) 円")
 
 
@@ -100,7 +106,7 @@ def fetch_quote(symbol: str) -> dict:
     text = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", s)))
     m = _PRICE_RE.search(text)
     if not m and _NO_PRICE_RE.search(text):
-        raise ValueError(f"{symbol}: 株価が表示されていません(売買停止・上場廃止予定の可能性)")
+        return _no_trade_quote(symbol, text)
     if not m:
         DEBUG_DIR.mkdir(parents=True, exist_ok=True)
         (DEBUG_DIR / f"{symbol}.html").write_text(page, encoding="utf-8")
@@ -116,9 +122,79 @@ def fetch_quote(symbol: str) -> dict:
     }
 
 
+def _no_trade_quote(symbol: str, text: str) -> dict:
+    """株価が「---」のとき、前日終値が直近なら「当日売買なし」として前日終値で返す。
+
+    出来高の少ない銘柄は売買が1株も成立しない日がある(2026-11-10のゼネラルパッカー)。
+    前日終値の日付が古い場合は、売買停止・上場廃止(例: イーグル工業は9/28で止まっていた)。
+    """
+    pm = _PREV_CLOSE_RE.search(text)
+    if not pm:
+        raise ValueError(f"{symbol}: 株価が表示されていません(売買停止・上場廃止予定の可能性)")
+    today = date.today()
+    month, day = int(pm.group(2)), int(pm.group(3))
+    prev = date(today.year, month, day)
+    if prev > today:  # 年をまたいだ場合(1月に見た12/30など)
+        prev = date(today.year - 1, month, day)
+    if (today - prev).days > NO_TRADE_MAX_DAYS:
+        raise ValueError(f"{symbol}: 株価が{prev.isoformat()}から更新されていません(売買停止・上場廃止の可能性)")
+    dps_m = _DPS_RE.search(text)
+    return {
+        "price": _num(pm.group(1)),
+        "change": None,
+        "change_pct": None,
+        "as_of": f"{month}/{day}",
+        "dps": _num(dps_m.group(1)) if dps_m else None,
+        "no_trade": True,
+    }
+
+
 def _progress(msg: str) -> None:
     """進捗を標準エラー出力へ(標準出力はSlack本文/JSON専用)。"""
     print(msg, file=sys.stderr, flush=True)
+
+
+def _base_row(code: str, name: str, positions: dict, analyzed: dict, t: dict, error=None) -> dict:
+    """ダッシュボード用の1銘柄分の行。株価が取れなくても、銘柄情報と保有情報は埋める。"""
+    row = {
+        "code": code,
+        "name": name,
+        "held": code in positions,
+        # analysis_results/ のディレクトリ名(= 株分析サイトの銘柄ページのパス)
+        "analysis_dir": f"{code}_{analyzed[code][0]}" if code in analyzed else None,
+        "target_yield": t.get("target_yield"),
+        "target_source": t.get("source"),
+        "target_note": t.get("note"),
+    }
+    if code in positions:
+        p = positions[code]
+        row.update({"quantity": p["quantity"], "avg_cost": round(p["avg_cost"], 1)})
+    if error:
+        row["error"] = error
+    return row
+
+
+def save_snapshot(today: date, indices: list, rows: list, holdings_date, errors: list, skipped: list) -> None:
+    """全銘柄の取得結果を market_watch/quotes/YYYY-MM-DD.json に保存する。
+
+    watch_and_build.sh がこのディレクトリを監視しており、書き込まれると株分析サイトが
+    再ビルドされてダッシュボードページが更新される。一時ファイル経由で書くのは、
+    書きかけのJSONをビルドに読まれないようにするため。
+    """
+    QUOTES_DIR.mkdir(parents=True, exist_ok=True)
+    snapshot = {
+        "date": today.isoformat(),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "holdings_file_date": holdings_date,
+        "indices": indices,
+        "stocks": rows,
+        "errors": errors,
+        "skipped": skipped,
+    }
+    path = QUOTES_DIR / f"{today.isoformat()}.json"
+    tmp = QUOTES_DIR / f".{path.name}.part"
+    tmp.write_text(json.dumps(snapshot, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    tmp.replace(path)
 
 
 def load_state() -> dict:
@@ -151,63 +227,82 @@ def collect(dry_run: bool) -> dict:
             errors.append(f"{label}: {e}")
         time.sleep(REQUEST_INTERVAL_SEC)
 
-    stocks, failed_codes, skipped = [], set(), []
+    rows, stocks, failed_codes, skipped = [], [], set(), []
     consecutive_blocks = 0
     # yield_targets.json には保有をやめた(未分析の)銘柄のエントリも残るため、
     # 今の保有銘柄＋分析済み銘柄に絞る(売却済みの銘柄を「新規候補」として出さない)。
-    scope = set(positions) | set(analyzed_stocks())
-    candidates = [(c, t) for c, t in targets.items()
-                  if c in scope and t.get("target_yield") is not None]
-    for i, (code, t) in enumerate(candidates):
+    # 目安利回りが無い銘柄(無配・優先株など)も、ダッシュボード用に株価は取る。
+    analyzed = analyzed_stocks()
+    candidates = sorted(set(positions) | set(analyzed))
+
+    def name_of(code: str) -> str:
+        if targets.get(code, {}).get("name"):
+            return targets[code]["name"]
+        return positions[code]["name"] if code in positions else analyzed[code][0]
+
+    for i, code in enumerate(candidates):
+        t = targets.get(code, {})
+        name = name_of(code)
         if i and i % BATCH_SIZE == 0:
             _progress(f"{i}/{len(candidates)}件取得、ブロック回避のため{BATCH_PAUSE_SEC}秒休憩")
             time.sleep(BATCH_PAUSE_SEC)
-        _progress(f"[{i + 1}/{len(candidates)}] {code} {t.get('name', '')}")
+        _progress(f"[{i + 1}/{len(candidates)}] {code} {name}")
         if consecutive_blocks >= MAX_CONSECUTIVE_BLOCKS:
-            skipped = [f"{c} {tt.get('name', '')}" for c, tt in candidates[i:]]
-            failed_codes.update(c for c, _ in candidates[i:])
+            skipped = [f"{c} {name_of(c)}" for c in candidates[i:]]
+            failed_codes.update(candidates[i:])
+            for c in candidates[i:]:
+                rows.append(_base_row(c, name_of(c), positions, analyzed, t=targets.get(c, {}),
+                                      error="Yahoo!ファイナンスの一時ブロックにより未取得"))
             break
+        row = _base_row(code, name, positions, analyzed, t)
+        rows.append(row)
         try:
             q = fetch_quote(f"{code}.T")
             consecutive_blocks = 0
         except (ValueError, requests.RequestException, QuoteBlocked) as e:
             consecutive_blocks = consecutive_blocks + 1 if isinstance(e, QuoteBlocked) else 0
-            errors.append(f"{code} {t.get('name', '')}: {e}")
+            errors.append(f"{code} {name}: {e}")
+            row["error"] = str(e)
             _progress(f"  失敗: {e}")
             failed_codes.add(code)
             continue
         finally:
             time.sleep(REQUEST_INTERVAL_SEC)
-        if not q["price"] or not q["dps"]:
-            continue  # 無配・予想未定
-        cur_yield = q["dps"] / q["price"] * 100
-        item = {
-            "code": code,
-            "name": t.get("name", ""),
+        row.update({
             "price": q["price"],
+            "change": q["change"],
             "change_pct": q["change_pct"],
             "as_of": q["as_of"],
+            "no_trade": q.get("no_trade", False),
             "dps": q["dps"],
-            "yield": round(cur_yield, 2),
-            "target_yield": t["target_yield"],
-            "target_note": t.get("note"),
+        })
+        if q["price"] and q["dps"]:
+            row["yield"] = round(q["dps"] / q["price"] * 100, 2)
+        if row["held"] and q["price"]:
+            p = positions[code]
+            row.update({
+                "market_value": round(q["price"] * p["quantity"]),
+                "unrealized_pl": round((q["price"] - p["avg_cost"]) * p["quantity"]),
+                "unrealized_pl_pct": round((q["price"] / p["avg_cost"] - 1) * 100, 2),
+            })
+            if q["dps"]:
+                new_qty = p["quantity"] + ADD_ON_SHARES
+                new_cost = (p["quantity"] * p["avg_cost"] + ADD_ON_SHARES * q["price"]) / new_qty
+                row.update({
+                    "annual_dividend": round(q["dps"] * p["quantity"]),
+                    "book_yield": round(q["dps"] / p["avg_cost"] * 100, 2),
+                    "add_on_avg_cost": round(new_cost, 1),
+                    "add_on_book_yield": round(q["dps"] / new_cost * 100, 2),
+                })
+        if t.get("target_yield") is None or not q["price"] or not q["dps"]:
+            continue  # 目安なし(無配・優先株など)・予想未定は到達判定しない
+        cur_yield = q["dps"] / q["price"] * 100
+        row.update({
             "reached": cur_yield >= t["target_yield"],
             # 目安利回りに届く株価(これ以下なら到達)
             "trigger_price": round(q["dps"] / t["target_yield"] * 100),
-            "held": code in positions,
-        }
-        if item["held"]:
-            p = positions[code]
-            new_qty = p["quantity"] + ADD_ON_SHARES
-            new_cost = (p["quantity"] * p["avg_cost"] + ADD_ON_SHARES * q["price"]) / new_qty
-            item.update({
-                "quantity": p["quantity"],
-                "avg_cost": round(p["avg_cost"], 1),
-                "book_yield": round(q["dps"] / p["avg_cost"] * 100, 2),
-                "add_on_avg_cost": round(new_cost, 1),
-                "add_on_book_yield": round(q["dps"] / new_cost * 100, 2),
-            })
-        stocks.append(item)
+        })
+        stocks.append(row)
 
     state = load_state()
     reached = [s for s in stocks if s["reached"]]
@@ -215,6 +310,7 @@ def collect(dry_run: bool) -> dict:
         s["first_reached"] = state.get(s["code"], today.isoformat())
         s["new"] = s["code"] not in state
     if not dry_run:
+        save_snapshot(today, indices, rows, holdings_date, errors, skipped)
         # 到達中の銘柄だけを残す(一度外れて再到達したら、また「新規」として通知する)。
         # 取得に失敗した銘柄は判定できないので前回の状態を引き継ぐ(翌日に「新規」と誤報しないため)。
         new_state = {c: d for c, d in state.items() if c in failed_codes}

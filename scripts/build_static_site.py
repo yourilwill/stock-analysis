@@ -3,9 +3,11 @@
 
 各銘柄ディレクトリのHTMLレポートはそのままコピーし、raw_data_*.mdは
 整形表示（Markdown→HTML）と生データ表示（<pre>）の2種類のページを生成する。
-併せて銘柄一覧のトップページ・各銘柄ディレクトリの一覧ページも生成する。
+併せて銘柄一覧のトップページ・各銘柄ディレクトリの一覧ページと、
+market_watch/quotes/ の最新スナップショットから株価ダッシュボード(dashboard.html)も生成する。
 
 使い方: python3 scripts/build_static_site.py [--src analysis_results] [--out analysis_results/_site]
+                                            [--quotes-dir market_watch/quotes]
 """
 import argparse
 import html
@@ -14,6 +16,10 @@ import shutil
 from pathlib import Path
 
 from markdown_it import MarkdownIt
+
+from dashboard_page import DASHBOARD_CSS, load_latest_snapshot, render_dashboard_body
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 DATE_RE = re.compile(r"_(\d{8})\.")
 LAST_UPDATED_RE = re.compile(r"最終更新日[:：]\s*(\d{4})-(\d{2})-(\d{2})")
@@ -131,8 +137,9 @@ def format_date(d: str) -> str:
     return f"{d[0:4]}/{d[4:6]}/{d[6:8]}" if len(d) == 8 else d
 
 
-def page(title: str, breadcrumb: str, body: str, depth: int) -> str:
+def page(title: str, breadcrumb: str, body: str, depth: int, wide: bool = False) -> str:
     prefix = "../" * depth
+    container_class = "container wide" if wide else "container"
     return f"""<!DOCTYPE html>
 <html lang="ja" data-theme="dracula">
 <head>
@@ -141,7 +148,7 @@ def page(title: str, breadcrumb: str, body: str, depth: int) -> str:
 <link rel="stylesheet" href="{prefix}assets/style.css">
 </head>
 <body>
-<div class="container">
+<div class="{container_class}">
 {THEME_CONTROLS}
 {breadcrumb}
 {body}
@@ -159,7 +166,7 @@ def company_breadcrumb(company_dirname: str, filename: str) -> str:
     )
 
 
-def build(src: Path, out: Path) -> int:
+def build(src: Path, out: Path, quotes_dir: Path) -> int:
     # outディレクトリ自体はrmtreeで作り直さず、中身だけ消す。
     # 本番配信先(/var/www/stock-analysis等)は親ディレクトリがroot所有で、
     # ディレクトリ自体の削除にはparentへの書き込み権限が要るため失敗しうる。
@@ -173,7 +180,7 @@ def build(src: Path, out: Path) -> int:
         out.mkdir(parents=True)
     assets = out / "assets"
     assets.mkdir()
-    (assets / "style.css").write_text(STYLE_CSS, encoding="utf-8")
+    (assets / "style.css").write_text(STYLE_CSS + "\n" + DASHBOARD_CSS, encoding="utf-8")
     (assets / "site.js").write_text(SITE_JS, encoding="utf-8")
 
     companies = []
@@ -250,7 +257,10 @@ def build(src: Path, out: Path) -> int:
         f'<td>{d}</td></tr>'
         for code, name, dirname, d in companies
     )
+    snapshot = load_latest_snapshot(quotes_dir)
+    dashboard_note = f"(最新: {html.escape(snapshot['date'])}の終値)" if snapshot else ""
     body = f"""<h1>日本株分析レポート一覧</h1>
+<p><a href="dashboard.html">💹 株価ダッシュボード →</a> <span class="note">{dashboard_note}</span></p>
 <p class="note">{len(companies)}銘柄</p>
 <input type="text" id="filter" class="filter-box" placeholder="銘柄コード・会社名で絞り込み" oninput="filterTable()">
 <table id="company-table">
@@ -294,6 +304,11 @@ function sortTable(colIndex, type) {{
 </script>
 """
     (out / "index.html").write_text(page("日本株分析レポート一覧", "", body, depth=0), encoding="utf-8")
+
+    dashboard_crumb = '<p class="note"><a href="index.html">銘柄一覧</a> &raquo; 株価ダッシュボード</p>'
+    (out / "dashboard.html").write_text(
+        page("株価ダッシュボード", dashboard_crumb, render_dashboard_body(snapshot), depth=0, wide=True),
+        encoding="utf-8")
     return len(companies)
 
 
@@ -301,8 +316,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--src", default="analysis_results", help="入力ディレクトリ（既定: analysis_results）")
     parser.add_argument("--out", default="analysis_results/_site", help="出力ディレクトリ（既定: analysis_results/_site）")
+    parser.add_argument("--quotes-dir", default=str(REPO_ROOT / "market_watch" / "quotes"),
+                        help="株価スナップショットのディレクトリ（既定: market_watch/quotes）")
     args = parser.parse_args()
-    count = build(Path(args.src), Path(args.out))
+    count = build(Path(args.src), Path(args.out), Path(args.quotes_dir))
     print(f"生成完了: {args.out}（{count}銘柄）")
 
 
