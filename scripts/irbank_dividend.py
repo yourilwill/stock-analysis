@@ -22,6 +22,8 @@ import requests
 from irbank_utils import fetch_with_retry
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+# 配当テーブルの支払時期の列(四半期配当の銘柄だけ1Q/3Qがある)
+PERIOD_COLUMNS = ("1Q", "中間", "3Q", "期末")
 
 
 def strip_tags(s: str) -> str:
@@ -106,7 +108,13 @@ def fetch_dividend_table(code: str):
                 parse_percent(row_cells[sub_index["配当利回り"]][1])
                 if "配当利回り" in sub_index else None
             )
-            rows.append({"status": status, "total": total, "adjusted": adjusted, "yield": dividend_yield})
+            # 中間・期末など支払時期ごとの1株配当(表にある列だけ)。年間受取額の計算用。
+            periods = {
+                name: parse_number(row_cells[sub_index[name]][1])
+                for name in PERIOD_COLUMNS if name in sub_index
+            }
+            rows.append({"status": status, "total": total, "adjusted": adjusted, "yield": dividend_yield,
+                         "periods": periods})
         groups.append({"year": year, "month": month, "rows": rows})
 
     return company_name, groups, url

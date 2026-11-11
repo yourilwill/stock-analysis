@@ -10,6 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - `.claude/skills/jp-stock-analysis/` — 銘柄分析Skill本体（`SKILL.md`）とHTMLレポートのテンプレート（`templates/report.html`）。
 - `scripts/` — IRBANK（https://irbank.net/）から指標・財務データを取得するPython CLIツール群。WebFetchより大幅にコンテキストを節約するため、Skillの各ステップから呼び出される。
+- `tradehistory_raw/` — 楽天証券の取引履歴CSV（`tradehistory(JP)_*.csv`）の置き場所。`scripts/dividend_income.py`（年間受取配当金の見積もり）が使い、既定ではデメテル（自宅NAS）から最新版をコピーしてくる。**gitignore対象。** `holdings_raw/` に置くと資産残高CSVと誤認されるので分けている。
 - `analysis_results/` — 分析結果の出力先（`<証券コード>_<会社名>/` ごとにraw_data・HTMLレポートを格納）。**gitignore対象のためリポジトリには含まれず、マシンごとにローカルへ蓄積される。**
 
 ## 開発環境

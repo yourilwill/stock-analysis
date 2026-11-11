@@ -4,3 +4,4 @@ market_watch/
 __pycache__/
 *.pyc
 .watch_and_build.lock
+tradehistory_raw/
