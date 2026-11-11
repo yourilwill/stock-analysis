@@ -20,11 +20,14 @@
 # design_doc/stock-analysis-watch-self-healing.md）:
 # - systemdのwatchdog機構（WatchdogSec）向けに、外側の待機ループ・デバウンス
 #   待ちループ・ビルド中いずれのフェーズでも一定間隔で`systemd-notify WATCHDOG=1`
-#   を送る。systemd側で`stock_analysis_watch_notify_enabled: true`にするまでは
-#   Type=simpleのままなのでこのpingは単に無視される（systemd-notifyはNOTIFY_SOCKET
-#   未設定なら何もしないため、Type=notify化前でも安全に呼べる）。
+#   を送る。`stock_analysis_watch_notify_enabled: false`（Type=simple）のときは
+#   このpingは単に無視される（systemd-notifyはNOTIFY_SOCKET未設定なら何もしない）。
 # - 起動直後の初回ビルド後に`systemd-notify --ready`を送る。Type=notifyの
 #   ユニットはこれが来るまで「起動中」扱いのままになるため必須。
+# - READY=1・WATCHDOG=1はどちらも外部コマンドのsystemd-notify（子プロセス、ビルド中は
+#   さらにサブシェル）から送るため、unit側に`NotifyAccess=all`が必要。既定の
+#   NotifyAccess=mainだとメインPID(このbash)以外からの通知は捨てられ、起動タイムアウト
+#   →再起動を約95秒周期でくり返す（personal_memo issue #158、PR #159で修正）。
 # - `flock`で多重起動を防止する（issue #8で原因不明の重複プロセスが観測された
 #   ため、原因不問の防御策として導入）。
 set -euo pipefail
@@ -141,10 +144,16 @@ while true; do
   # ハートビートログを出せるようにしている（design_doc参照。タイムアウト無しだと
   # 健全な待機中に一度もpingが送れず、watchdogに誤って再起動させられてしまう）。
   while true; do
-    if changed=$(inotifywait -r -t "$WATCHDOG_POLL_SEC" -e "$EVENTS" --exclude "$EXCLUDE" --format '%f' "$SRC" 2>/dev/null); then
+    if changed=$(inotifywait -r -t "$WATCHDOG_POLL_SEC" -e "$EVENTS" --exclude "$EXCLUDE" --format '%e %f' "$SRC" 2>/dev/null); then
       send_watchdog_ping
       maybe_log_heartbeat
       [[ "$changed" == *.html ]] && break
+      # 新しいディレクトリの作成もビルド対象にする。inotifywait -rは呼び出しのたびに
+      # その時点のディレクトリにだけ監視を張るため、ディレクトリ作成を検知してから次の
+      # inotifywaitが監視を張り直すまでの間にその中へ書かれた*.htmlは取りこぼす
+      # （2026-11-11、mkdir直後にHTMLを書くテストで再現）。後続のデバウンス待ちで
+      # 書き込みが落ち着いてからビルドする。
+      [[ "$changed" == *ISDIR* ]] && break
       continue
     else
       # $?はここで即座に取る(if/fiの間にelseを挟まないと、if文自体の終了コード
