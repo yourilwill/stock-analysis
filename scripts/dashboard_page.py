@@ -195,6 +195,7 @@ def _row(s: dict) -> str:
         _cell(html.escape(s["code"]), s["code"]),
         _cell(name + badges, s["name"]),
         _cell(_fmt_num(s.get("price"), 1 if s.get("price") and s["price"] % 1 else 0), s.get("price")),
+        _cell(_fmt_signed(s.get("change"), 1 if s.get("change") and s["change"] % 1 else 0, ""), s.get("change")),
         _cell(_fmt_signed(s.get("change_pct")), s.get("change_pct")),
         _cell(_fmt_num(s.get("dps"), 1 if s.get("dps") and s["dps"] % 1 else 0), s.get("dps")),
         _cell(_fmt_num(cur_yield, 2, "%"), cur_yield),
@@ -212,7 +213,7 @@ def _row(s: dict) -> str:
 
 
 COLUMNS = [
-    ("コード", "str"), ("銘柄", "str"), ("終値", "num"), ("前日比", "num"), ("予想配当", "num"),
+    ("コード", "str"), ("銘柄", "str"), ("終値", "num"), ("前日差", "num"), ("前日比", "num"), ("予想配当", "num"),
     ("予想利回り", "num"), ("目安利回り", "num"), ("目安との差", "num"), ("目安株価", "num"),
     ("簿価利回り", "num"), ("株数", "num"), ("取得単価", "num"), ("評価額", "num"), ("評価損益率", "num"),
 ]
