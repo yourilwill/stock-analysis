@@ -5,8 +5,9 @@
 
 データの優先順位:
 1. 実績: 楽天証券からダウンロードした配当金・分配金一覧 dividends_raw/dividendlist_YYYYMMDD.csv
-   (gitignore対象。デメテルの rakuten_stocks/ に置くと、平日夕方の取り込み処理でコピーされる想定)。
-   ファイル名の日付までに入金された分を「実績」とする。
+   (gitignore対象。デメテルの rakuten_stocks/ に置くと、平日夕方の取り込み処理でコピーされる)。
+   置いてある全てのCSVを合わせ、重複を除いて使う(ダウンロード期間を絞ったCSVでも過去分は消えない)。
+   一番新しいCSVのファイル名の日付までに入金された分を「実績」とする。
 2. 推定: CSVの日付より後の月は、dividend_income.py の見積もり(取引履歴＋IRBANKの1株配当)で埋める。
    支払月が今月より前なら「推定」(入金済みのはずだが未確認)、今月以降なら「見込み」。
    CSVの日付と同じ月は、実績にまだ出ていない銘柄の分だけ見積もりを足す。
@@ -49,11 +50,37 @@ def _num(s: str) -> float:
     return float(s) if s not in ("", "-") else 0.0
 
 
-def latest_actual_csv(actual_dir: Path = ACTUAL_DIR):
+def actual_csvs(actual_dir: Path = ACTUAL_DIR) -> list:
+    """dividends_raw/ の配当金一覧CSV(楽天のファイル名のまま置かれたもの)を古い順に返す。"""
     if not actual_dir.is_dir():
-        return None
-    files = sorted(p for p in actual_dir.glob("dividendlist_*.csv") if _ACTUAL_NAME_RE.fullmatch(p.name))
+        return []
+    return sorted(p for p in actual_dir.glob("dividendlist_*.csv") if _ACTUAL_NAME_RE.fullmatch(p.name))
+
+
+def latest_actual_csv(actual_dir: Path = ACTUAL_DIR):
+    files = actual_csvs(actual_dir)
     return files[-1] if files else None
+
+
+def load_all_actual(paths: list):
+    """(最新のCSVの日付, 全CSVを合わせて重複を除いた実績)。
+
+    ダウンロードする期間はファイルごとに違ってよい。同じ入金は複数のCSVに出てくるので、
+    (入金日・商品・銘柄・数量・金額)が同じものは「各CSVでの出現回数の最大値」だけ数える
+    (1つのCSVに同じ行が2行あれば、別々の入金として2件のまま残る)。
+    """
+    as_of, best = None, {}
+    for path in paths:
+        file_as_of, entries = load_actual(path)
+        as_of = max(as_of, file_as_of) if as_of else file_as_of
+        counts = {}
+        for e in entries:
+            key = (e["date"], e["market"], e["code"], e["qty"], e["gross"], e["net"])
+            counts.setdefault(key, []).append(e)
+        for key, es in counts.items():
+            if len(es) > len(best.get(key, [])):
+                best[key] = es
+    return as_of, sorted((e for es in best.values() for e in es), key=lambda e: e["date"])
 
 
 def load_actual(path: Path):
@@ -112,8 +139,8 @@ def merged_monthly(today: date = None):
       as_of: 実績CSVの日付(ISO) or None
     """
     today = today or date.today()
-    csv_path = latest_actual_csv()
-    as_of, actual = load_actual(csv_path) if csv_path else (None, [])
+    paths = actual_csvs()
+    as_of, actual = load_all_actual(paths) if paths else (None, [])
     estimates = load_estimates()
     this_month = today.strftime("%Y-%m")
     as_of_month = as_of.strftime("%Y-%m") if as_of else "0000-00"
@@ -184,7 +211,7 @@ def cmd_estimate(year: int, no_fetch: bool) -> None:
     path = path or di.latest_local()
     if path is None:
         sys.exit("取引履歴CSV(tradehistory_raw/)がありません")
-    trades = di.load_trades(path)
+    trades = di.load_trades(paths=di.local_trade_files() or [path])
     entries, unresolved = di.estimate(year, trades)
     # IRBANKの障害などで大半の銘柄の配当表が取れなかった場合は、前回の見積もりを空に近い内容で
     # 上書きしない(配当ページの見込みが翌月まで黙って空になるのを防ぐ。personal_memo issue #163)。
