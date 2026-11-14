@@ -104,8 +104,15 @@ def fetch_from_nas():
     return dest
 
 
+def local_trade_files() -> list:
+    """tradehistory_raw/ の取引履歴CSV(楽天のファイル名のまま置かれたもの)を古い順に返す。"""
+    if not TRADE_DIR.is_dir():
+        return []
+    return sorted(p for p in TRADE_DIR.glob("tradehistory*.csv") if _TRADE_NAME_RE.fullmatch(p.name))
+
+
 def latest_local():
-    files = sorted(TRADE_DIR.glob("tradehistory*.csv"))
+    files = local_trade_files()
     return files[-1] if files else None
 
 
@@ -114,22 +121,52 @@ def parse_date(s: str) -> date:
     return date(y, m, d)
 
 
-def load_trades(path: Path) -> list:
-    trades = []
+# 複数の取引履歴CSVで同じ取引かどうかを見分ける列
+_TRADE_KEY_COLS = ("約定日", "受渡日", "銘柄コード", "口座区分", "取引区分", "売買区分", "数量［株］", "単価［円］", "受渡金額［円］")
+
+
+def _read_trade_rows(path: Path) -> list:
     with path.open(encoding="cp932", newline="") as f:
-        for row in csv.DictReader(f):
-            kind = row["売買区分"].strip()
-            if kind not in _SIGNS:
-                print(f"警告: 未対応の売買区分のため無視します: {row['約定日']} {row['銘柄コード']} {kind}",
-                      file=sys.stderr)
-                continue
-            trades.append({
-                "trade_date": parse_date(row["約定日"]),
-                "settle_date": parse_date(row["受渡日"]),
-                "code": row["銘柄コード"].strip(),
-                "name": row["銘柄名"].strip(),
-                "qty": _SIGNS[kind] * int(row["数量［株］"].replace(",", "")),
-            })
+        return list(csv.DictReader(f))
+
+
+def merged_trade_rows(paths: list) -> list:
+    """複数の取引履歴CSVの行を合わせ、重複を除いて返す。
+
+    楽天からダウンロードする期間はファイルごとに違ってよい(期間を絞った新しいCSVを置いても、
+    以前に取り込んだCSVにしか無い古い取引は残る)。同じ取引は複数のCSVに出てくるので、
+    キー列が同じ行は「各CSVでの出現回数の最大値」だけ数える。こうすると、同じ日に同じ銘柄を
+    同じ数量・単価で2回取引した場合(1つのCSVに同じ行が2行ある)も、2件のまま残せる。
+    """
+    best = {}
+    for path in paths:
+        counts = {}
+        for row in _read_trade_rows(path):
+            key = tuple((row.get(c) or "").strip() for c in _TRADE_KEY_COLS)
+            counts.setdefault(key, []).append(row)
+        for key, rows in counts.items():
+            if len(rows) > len(best.get(key, [])):
+                best[key] = rows
+    return [row for rows in best.values() for row in rows]
+
+
+def load_trades(path=None, paths=None) -> list:
+    """取引履歴を読み込む。paths を渡すと、それらのCSVを合わせて重複を除いたものを使う。"""
+    rows = merged_trade_rows(paths) if paths else _read_trade_rows(path)
+    trades = []
+    for row in rows:
+        kind = row["売買区分"].strip()
+        if kind not in _SIGNS:
+            print(f"警告: 未対応の売買区分のため無視します: {row['約定日']} {row['銘柄コード']} {kind}",
+                  file=sys.stderr)
+            continue
+        trades.append({
+            "trade_date": parse_date(row["約定日"]),
+            "settle_date": parse_date(row["受渡日"]),
+            "code": row["銘柄コード"].strip(),
+            "name": row["銘柄名"].strip(),
+            "qty": _SIGNS[kind] * int(row["数量［株］"].replace(",", "")),
+        })
     return trades
 
 
@@ -295,7 +332,8 @@ def main():
               file=sys.stderr)
         sys.exit(1)
 
-    trades = load_trades(trade_path)
+    # tradehistory_raw/ にある全ての取引履歴CSVを合わせて使う(期間を絞ったCSVでも過去分が消えない)
+    trades = load_trades(paths=local_trade_files() or [trade_path])
     check_against_snapshot(trades, trade_path)
     entries, unresolved = estimate(args.year, trades)
     print_report(args.year, trade_path, entries, unresolved, args.detail)
