@@ -38,6 +38,11 @@ SRC="analysis_results"
 # YYYY-MM-DD.jsonを書く(一時ファイルからのmv)。ここも監視して、書かれたらビルドする。
 # inotifywaitは存在しないパスを監視できないので、無ければ作っておく(gitignore対象)。
 QUOTES_DIR="${QUOTES_DIR:-market_watch/quotes}"
+# 受取配当金ページ(dividends.html)のデータ。楽天の配当金一覧CSV(dividends_raw/、デメテルからの
+# 取り込みで置かれる)と、月1回の見積もり(market_watch/dividend_estimates/)。どちらも
+# QUOTES_DIRと同じく、配下のイベントは種類を問わずビルドのきっかけにする。
+DIVIDEND_DIRS=("dividends_raw" "market_watch/dividend_estimates")
+DATA_DIRS=("$QUOTES_DIR" "${DIVIDEND_DIRS[@]}")
 OUT_DIR="${OUT_DIR:-analysis_results/_site}"
 DEBOUNCE_SEC=5
 EVENTS="close_write,create,delete,move"
@@ -131,8 +136,8 @@ run_build_with_heartbeat() {
   return "$result"
 }
 
-mkdir -p "$QUOTES_DIR"
-echo "[$(date '+%F %T')] 監視開始: $SRC/**/*.html, $QUOTES_DIR/*.json (除外: _site/, 出力先: $OUT_DIR)"
+mkdir -p "${DATA_DIRS[@]}"
+echo "[$(date '+%F %T')] 監視開始: $SRC/**/*.html, ${DATA_DIRS[*]} (除外: _site/, 出力先: $OUT_DIR)"
 
 # 起動直後は次のHTML更新イベントを待たず、まず一度ビルドしておく
 # （再起動直後に公開ディレクトリが空/古いままになるのを防ぐため）
@@ -149,16 +154,20 @@ while true; do
   # ハートビートログを出せるようにしている（design_doc参照。タイムアウト無しだと
   # 健全な待機中に一度もpingが送れず、watchdogに誤って再起動させられてしまう）。
   while true; do
-    if changed=$(inotifywait -r -t "$WATCHDOG_POLL_SEC" -e "$EVENTS" --exclude "$EXCLUDE" --format '%e %w%f' "$SRC" "$QUOTES_DIR" 2>/dev/null); then
+    if changed=$(inotifywait -r -t "$WATCHDOG_POLL_SEC" -e "$EVENTS" --exclude "$EXCLUDE" --format '%e %w%f' "$SRC" "${DATA_DIRS[@]}" 2>/dev/null); then
       send_watchdog_ping
       maybe_log_heartbeat
       [[ "$changed" == *.html ]] && break
       # 株価スナップショットは、market_digest.pyが一時ファイル(.YYYY-MM-DD.json.part)に
       # 書いてから即座にmvする。一時ファイルのイベントで戻ってから次のinotifywaitが
       # 監視を張り直すまでの間にmvが終わり、*.jsonのイベントを取りこぼすため
-      # (2026-11-11にテストで再現)、QUOTES_DIR配下のイベントは種類を問わずビルドの
+      # (2026-11-11にテストで再現)、QUOTES_DIR等のデータディレクトリ配下のイベントは種類を問わずビルドの
       # きっかけにする(後続のデバウンス待ちでmvが終わってからビルドする)。
-      [[ "$changed" == *" ${QUOTES_DIR%/}/"* ]] && break
+      data_event=false
+      for d in "${DATA_DIRS[@]}"; do
+        [[ "$changed" == *" ${d%/}/"* ]] && data_event=true
+      done
+      $data_event && break
       # 新しいディレクトリの作成もビルド対象にする。inotifywait -rは呼び出しのたびに
       # その時点のディレクトリにだけ監視を張るため、ディレクトリ作成を検知してから次の
       # inotifywaitが監視を張り直すまでの間にその中へ書かれた*.htmlは取りこぼす
@@ -182,7 +191,7 @@ while true; do
   done
   # 静穏化待ち: DEBOUNCE_SEC秒間イベントが来なくなるまでループ。
   # こちらも1周がDEBOUNCE_SEC(短い)ごとなので、そのついでにwatchdog pingを送る。
-  while inotifywait -r -t "$DEBOUNCE_SEC" -e "$EVENTS" --exclude "$EXCLUDE" "$SRC" "$QUOTES_DIR" >/dev/null 2>&1; do
+  while inotifywait -r -t "$DEBOUNCE_SEC" -e "$EVENTS" --exclude "$EXCLUDE" "$SRC" "${DATA_DIRS[@]}" >/dev/null 2>&1; do
     send_watchdog_ping
   done
   send_watchdog_ping

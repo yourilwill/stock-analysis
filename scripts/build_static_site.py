@@ -18,6 +18,7 @@ from pathlib import Path
 from markdown_it import MarkdownIt
 
 from dashboard_page import DASHBOARD_CSS, load_latest_snapshot, render_dashboard_body
+from dividends_page import DIVIDENDS_CSS, render_dividends_body
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -180,7 +181,7 @@ def build(src: Path, out: Path, quotes_dir: Path) -> int:
         out.mkdir(parents=True)
     assets = out / "assets"
     assets.mkdir()
-    (assets / "style.css").write_text(STYLE_CSS + "\n" + DASHBOARD_CSS, encoding="utf-8")
+    (assets / "style.css").write_text(STYLE_CSS + "\n" + DASHBOARD_CSS + "\n" + DIVIDENDS_CSS, encoding="utf-8")
     (assets / "site.js").write_text(SITE_JS, encoding="utf-8")
 
     companies = []
@@ -260,7 +261,8 @@ def build(src: Path, out: Path, quotes_dir: Path) -> int:
     snapshot = load_latest_snapshot(quotes_dir)
     dashboard_note = f"(最新: {html.escape(snapshot['date'])}の終値)" if snapshot else ""
     body = f"""<h1>日本株分析レポート一覧</h1>
-<p><a href="dashboard.html">💹 株価ダッシュボード →</a> <span class="note">{dashboard_note}</span></p>
+<p><a href="dashboard.html">💹 株価ダッシュボード →</a> <span class="note">{dashboard_note}</span>
+　<a href="dividends.html">💰 受取配当金 →</a></p>
 <p class="note">{len(companies)}銘柄</p>
 <input type="text" id="filter" class="filter-box" placeholder="銘柄コード・会社名で絞り込み" oninput="filterTable()">
 <table id="company-table">
@@ -309,6 +311,9 @@ function sortTable(colIndex, type) {{
     (out / "dashboard.html").write_text(
         page("株価ダッシュボード", dashboard_crumb, render_dashboard_body(snapshot), depth=0, wide=True),
         encoding="utf-8")
+    dividends_crumb = '<p class="note"><a href="index.html">銘柄一覧</a> &raquo; 受取配当金</p>'
+    (out / "dividends.html").write_text(
+        page("受取配当金", dividends_crumb, render_dividends_body(), depth=0, wide=True), encoding="utf-8")
     return len(companies)
 
 

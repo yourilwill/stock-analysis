@@ -8,6 +8,9 @@ import html
 import json
 from pathlib import Path
 
+# 特定口座の配当にかかる税率(所得税・復興特別所得税・住民税)
+TAX_RATE = 0.20315
+
 DASHBOARD_CSS = """
 .container.wide { max-width: 1480px; }
 .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 16px 0 24px; }
@@ -147,15 +150,21 @@ def _summary(stocks: list) -> str:
         card("評価損益", _fmt_signed(pl, 0, "円"), _fmt_signed(pl / cost * 100 if cost else None)),
         card("取得額(保有)", f"{cost:,.0f}円",
              f"株価未取得の{unpriced}銘柄を除く" if unpriced else "平均取得単価×株数"),
-        card("年間配当見込み", f"{annual_div:,.0f}円", "会社予想配当×株数(税引前)"),
-        card("配当利回り(時価/簿価)",
+        card("年間配当見込み(税引前)", f"{annual_div:,.0f}円", "会社予想配当×株数"),
+        card("配当利回り(時価・税引前)",
              f"{annual_div / market_value * 100:.2f}%" if market_value else "—",
              f"簿価 {annual_div / cost * 100:.2f}%" if cost else ""),
         card("目安利回りに到達", f"{len(reached)}銘柄", f"保有 {reached_held} / 未保有 {len(reached) - reached_held}"),
     ]
     if failed:
         cards.append(card("株価の取得失敗", f"{failed}銘柄", "表の灰色の行"))
-    return '<div class="summary-grid">' + "".join(cards) + "</div>"
+    # 税引後はカードの外に1行で添える(カードに入れると縦長になって並びが崩れるため)
+    after_tax = ""
+    if market_value and cost:
+        after_tax = (f'<p class="note">配当・利回りはすべて税引前(会社予想ベース)。税引後(特定口座、税率{TAX_RATE * 100:.3f}%)では、'
+                     f'年間配当見込み {annual_div * (1 - TAX_RATE):,.0f}円、配当利回り 時価 {annual_div / market_value * 100 * (1 - TAX_RATE):.2f}%'
+                     f'・簿価 {annual_div / cost * 100 * (1 - TAX_RATE):.2f}%。</p>')
+    return '<div class="summary-grid">' + "".join(cards) + "</div>" + after_tax
 
 
 def _indices(indices: list) -> str:
