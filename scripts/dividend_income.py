@@ -85,12 +85,20 @@ def fetch_from_nas():
     if dest.exists():
         return dest
     TRADE_DIR.mkdir(exist_ok=True)
+    # 一時ファイル名で受けてからrenameする。本来の名前に直接getすると、途中で失敗・タイムアウト
+    # したときに壊れたCSVが残り、上の exists() で以後ずっと使われてしまうため(issue #163)。
+    # 一時ファイル名は「.」始まりで「.csv」で終わらないので、latest_local() のglobにも引っかからない。
+    part = TRADE_DIR / f".{names[-1]}.part"
     try:
         subprocess.run(
-            ["smbclient", "-U", "%", NAS_SHARE, "-c", f'cd {NAS_DIR}; get "{names[-1]}" "{dest}"'],
+            ["smbclient", "-U", "%", NAS_SHARE, "-c", f'cd {NAS_DIR}; get "{names[-1]}" "{part}"'],
             capture_output=True, text=True, timeout=120, check=True,
         )
+        if part.stat().st_size == 0:
+            raise OSError("取得したファイルが空です")
+        part.replace(dest)
     except (OSError, subprocess.SubprocessError) as e:
+        part.unlink(missing_ok=True)
         print(f"警告: NASから{names[-1]}を取得できませんでした({e})", file=sys.stderr)
         return None
     return dest

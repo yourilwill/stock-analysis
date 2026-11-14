@@ -19,6 +19,10 @@
     python3 scripts/dividend_history.py estimate              # 今年分の見積もりを保存
     python3 scripts/dividend_history.py estimate --year 2027
     python3 scripts/dividend_history.py show                  # 実績＋見積もりの月別集計を表示
+
+終了コード(estimate): 0=保存した、1=取引履歴CSVが無い、2=IRBANKの取得失敗が多く保存しなかった
+(配当表を取得できなかった銘柄が半数を超えた、または見積もりが0件)。銘柄ごとの失敗は
+JSONの unresolved に記録して0で終わる。
 """
 import argparse
 import csv
@@ -34,6 +38,10 @@ ACTUAL_DIR = REPO_ROOT / "dividends_raw"
 ESTIMATE_DIR = REPO_ROOT / "market_watch" / "dividend_estimates"
 TAX_RATE = 0.20315
 _ACTUAL_NAME_RE = re.compile(r"dividendlist_(\d{8})\.csv")
+# dividend_income.estimate() が配当表の取得失敗につける理由の書き出し
+FETCH_FAILED_PREFIX = "IRBANKの配当表を取得できません"
+# 配当表を取得できなかった銘柄がこの割合を超えたら、障害とみなして見積もりを保存しない
+MAX_FETCH_FAILED_RATIO = 0.5
 
 
 def _num(s: str) -> float:
@@ -178,6 +186,14 @@ def cmd_estimate(year: int, no_fetch: bool) -> None:
         sys.exit("取引履歴CSV(tradehistory_raw/)がありません")
     trades = di.load_trades(path)
     entries, unresolved = di.estimate(year, trades)
+    # IRBANKの障害などで大半の銘柄の配当表が取れなかった場合は、前回の見積もりを空に近い内容で
+    # 上書きしない(配当ページの見込みが翌月まで黙って空になるのを防ぐ。personal_memo issue #163)。
+    fetch_failed = {c for c, _, r, _ in unresolved if r.startswith(FETCH_FAILED_PREFIX)}
+    all_codes = {e["code"] for e in entries} | {c for c, *_ in unresolved}
+    if not entries or (all_codes and len(fetch_failed) > len(all_codes) * MAX_FETCH_FAILED_RATIO):
+        print(f"エラー: IRBANKの配当表を取得できなかった銘柄が{len(fetch_failed)}/{len(all_codes)}件"
+              f"(見積もり{len(entries)}件)のため、{year}.json を更新しません", file=sys.stderr)
+        sys.exit(2)
     ESTIMATE_DIR.mkdir(parents=True, exist_ok=True)
     out = {
         "year": year,
