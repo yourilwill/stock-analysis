@@ -8,6 +8,9 @@ import html
 import json
 from pathlib import Path
 
+# 特定口座の配当にかかる税率(所得税・復興特別所得税・住民税)
+TAX_RATE = 0.20315
+
 DASHBOARD_CSS = """
 .container.wide { max-width: 1480px; }
 .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 16px 0 24px; }
@@ -147,10 +150,11 @@ def _summary(stocks: list) -> str:
         card("評価損益", _fmt_signed(pl, 0, "円"), _fmt_signed(pl / cost * 100 if cost else None)),
         card("取得額(保有)", f"{cost:,.0f}円",
              f"株価未取得の{unpriced}銘柄を除く" if unpriced else "平均取得単価×株数"),
-        card("年間配当見込み", f"{annual_div:,.0f}円", "会社予想配当×株数(税引前)"),
-        card("配当利回り(時価/簿価)",
+        card("年間配当見込み(税引前)", f"{annual_div:,.0f}円", f"税引後 {annual_div * (1 - TAX_RATE):,.0f}円・会社予想配当×株数"),
+        card("配当利回り(時価・税引前)",
              f"{annual_div / market_value * 100:.2f}%" if market_value else "—",
-             f"簿価 {annual_div / cost * 100:.2f}%" if cost else ""),
+             (f"簿価 {annual_div / cost * 100:.2f}%<br>税引後: 時価 {annual_div / market_value * 100 * (1 - TAX_RATE):.2f}%"
+              f"・簿価 {annual_div / cost * 100 * (1 - TAX_RATE):.2f}%") if cost and market_value else ""),
         card("目安利回りに到達", f"{len(reached)}銘柄", f"保有 {reached_held} / 未保有 {len(reached) - reached_held}"),
     ]
     if failed:
