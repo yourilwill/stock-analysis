@@ -27,6 +27,21 @@ MAX_SUMMARY_LEN = 150
 # design_doc「検証済み事項」参照。
 ALLOWED_TOOLS = "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch,Agent"
 
+# `claude -p`の認証エラー(ログイン期限切れ、CLAUDE_CODE_OAUTH_TOKENの期限切れ・取り消し等)。
+# -pでは「Failed to authenticate: ...」「Failed to authenticate. API Error: 401 ...」の形で
+# **標準出力**に出て、標準エラー出力は空になる(2026-11-16、Claude Code 2.1.325で確認)。
+AUTH_ERROR_PATTERN = re.compile(r"Failed to authenticate|Please run /login|authentication_failed", re.I)
+
+
+class ClaudeAuthError(Exception):
+    """`claude -p`が認証エラーで失敗した。銘柄側の問題ではないので、試行回数を消費させない。"""
+
+
+def output_tail(result: subprocess.CompletedProcess, max_len: int = 500) -> str:
+    """失敗理由として添える、標準出力+標準エラー出力の末尾(空白は1つに詰める)。"""
+    combined = " ".join(f"{result.stdout or ''} {result.stderr or ''}".split())
+    return combined[-max_len:]
+
 
 def load_queue_state() -> list:
     if not QUEUE_STATE_PATH.exists():
@@ -141,7 +156,9 @@ def find_updated_raw_data(code: str, started_at: float) -> Path | None:
 
 
 def run_analysis(item: dict, claude_bin: str, model: str, timeout_sec: int) -> tuple[bool, str]:
-    """1銘柄の更新分析を`claude -p`で無人実行する。戻り値は(成功したか, summary or エラー理由)。"""
+    """1銘柄の更新分析を`claude -p`で無人実行する。戻り値は(成功したか, summary or エラー理由)。
+    認証エラーのときは、戻り値ではなくClaudeAuthErrorを送出する。
+    """
     prompt = (
         f"{item['name']}(証券コード{item['code']})の決算短信({item['kubun']})を反映した"
         "更新分析をして。"
@@ -151,6 +168,9 @@ def run_analysis(item: dict, claude_bin: str, model: str, timeout_sec: int) -> t
         result = subprocess.run(
             [claude_bin, "-p", "--model", model, f"--allowedTools={ALLOWED_TOOLS}", prompt],
             cwd=REPO_ROOT,
+            # 手動実行時に「no stdin data received in 3s」の警告で3秒待たされ、失敗理由にも混ざるのを防ぐ
+            # (systemd経由では元々stdinが/dev/nullなので挙動は変わらない)
+            stdin=subprocess.DEVNULL,
             timeout=timeout_sec,
             capture_output=True,
             text=True,
@@ -159,8 +179,11 @@ def run_analysis(item: dict, claude_bin: str, model: str, timeout_sec: int) -> t
         return False, f"タイムアウト({timeout_sec}秒)"
 
     if result.returncode != 0:
-        stderr_tail = result.stderr.strip()[-500:]
-        return False, f"exit_code={result.returncode}: {stderr_tail}"
+        # エラー文は標準出力側に出ることがある(認証エラー等)ので、両方を見る
+        tail = output_tail(result)
+        if AUTH_ERROR_PATTERN.search(tail):
+            raise ClaudeAuthError(tail)
+        return False, f"exit_code={result.returncode}: {tail}"
 
     raw_data_path = find_updated_raw_data(item["code"], started_at)
     if raw_data_path is None:
@@ -204,7 +227,22 @@ def main():
         save_queue_state(queue)
 
         print(f"分析開始: {item['code']} {item['name']} ({item['kubun']})")
-        ok, detail = run_analysis(item, args.claude_bin, args.model, args.timeout_sec)
+        try:
+            ok, detail = run_analysis(item, args.claude_bin, args.model, args.timeout_sec)
+        except ClaudeAuthError as e:
+            # 認証が切れていると残りの銘柄も全部同じ理由で失敗し、試行回数(MAX_ATTEMPTS)だけを
+            # 無駄に消費して、2晩でfailed_needs_attentionに落ちてしまう。試行回数は数えずに
+            # pendingへ戻し、残りは処理せずにバッチ全体を止める。0以外で終了するので、
+            # ラッパー(stock_analysis_nightly_batch.sh)がSlackにエラー通知を出す。
+            item["status"] = "pending"
+            save_queue_state(queue)
+            print(
+                f"claude -pの認証エラーのため、夜間バッチを中断します(試行回数は数えません): "
+                f"{item['code']} {item['name']}: {e}\n"
+                "claude CLIのログイン(/login)、またはCLAUDE_CODE_OAUTH_TOKENの期限を確認してください。",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
         if ok:
             item["status"] = "done"
